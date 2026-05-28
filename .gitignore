@@ -1,0 +1,17 @@
+# Environment variables (contains real passwords)
+.env
+
+# Python virtual environment
+venv/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Node dependencies
+node_modules/
+
+# OS files
+.DS_Store
+Thumbs.db
