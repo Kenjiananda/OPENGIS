@@ -5,13 +5,14 @@ from pyproj import Transformer
 
 router = APIRouter(prefix="/spatial", tags=["spatial analysis"])
 
+
+transformer_to_utm = Transformer.from_crs("EPSG:4326", "EPSG:32748", always_xy=True)
+transformer_to_wgs = Transformer.from_crs("EPSG:32748", "EPSG:4326", always_xy=True)
+
 @router.post("/buffer")
 async def buffer(geometry: dict, distance_meters: float):
     try:
         geom = shape(geometry)
-
-        transformer_to_utm = Transformer.from_crs("EPSG:4326", "EPSG:32748", always_xy=True)
-        transformer_to_wgs = Transformer.from_crs("EPSG:32748", "EPSG:4326", always_xy=True)
 
         geom_utm = transform(transformer_to_utm.transform, geom)
         buffered_utm = geom_utm.buffer(distance_meters)
@@ -23,7 +24,7 @@ async def buffer(geometry: dict, distance_meters: float):
             "geometry": mapping(buffered_wgs)
         }
     except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))(status_code=400, fetail=str(e))
+        raise HTTPException(status_code=400, detail=str(e))
     
 @router.post("/intersect")
 async def intersect(geometry1: dict, geometry2: dict):
