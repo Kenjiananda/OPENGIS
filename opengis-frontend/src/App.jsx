@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
-import maplibregl from 'maplibre-gl'
+import maplibregl, { Popup } from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
 import axios from 'axios'
 
@@ -218,6 +218,8 @@ function App() {
   const [routeStart, setRouteStart] = useState('')
   const [routeEnd, setRouteEnd] = useState('')
   const [bufferDistance, setBufferDistance] = useState(500)
+  const [viewshedRadius, setViewshedRadius] = useState(1000)
+  const [viewshedHeight, setViewshedHeight] = useState(10)
   const currentMarker = useRef(null)
   const currentLocation = useRef(null)
 
@@ -233,20 +235,26 @@ function App() {
 
     map.current.addControl(new maplibregl.NavigationControl(), 'top-right')
 
-    map.current.on('click', (e) => {
-      const { lng, lat } = e.lngLat
-      if (currentMarker.current) currentMarker.current.remove()
-      currentMarker.current = new maplibregl.Marker({ color: '#e74c3c' })
+    map.current.on('click', (e) =>{
+      const{lng, lat} = e.lngLat
+      if(currentMarker.current) currentMarker.current.remove()
+      currentMarker.current = new maplibregl.Marker({color: '#e74c3c'})
         .setLngLat([lng, lat])
         .setPopup(new maplibregl.Popup().setText(`${lat.toFixed(5)}, ${lng.toFixed(5)}`))
         .addTo(map.current)
-      currentLocation.current = { lat, lng }
+      currentLocation.current ={lat, lng}
       setStatus(`📍 Pinned: ${lat.toFixed(5)}, ${lng.toFixed(5)}`)
 
       if(map.current.getSource('buffer')){
         throttledBuffer(bufferDistance)
       }
+
+      if(map.current.getSource('viewshed')){
+      throttledViewshed(viewshedRadius, viewshedHeight)
+      }
     })
+
+    
 
     const recenterBtn = document.createElement('button')
     recenterBtn.className = 'recenter-btn'
@@ -345,22 +353,48 @@ const clearBuffer = () => {
 
 
 
-  const handleViewshed = async () => {
-    try {
-      if (!currentLocation.current) { setStatus('Search or pin a location first!'); return }
-      setStatus('Running viewshed...')
-      const { lat, lng } = currentLocation.current
-      const res = await axios.get(`${API}/viewshed/`, {
-        params: { latitude: lat, longitude: lng, radius_meters: 1000, observer_height: 10 }
+  const runViewshed = useCallback (async (radius, height) => {
+    if(!currentLocation.current){
+      setStatus('location is not Pinned!')
+      return
+    }
+    try{
+      const {lat, lng} = currentLocation.current
+      const res = await axios.get(`${API}/viewshed/`,{
+        params: {latitude: lat, longitude: lng, radius_meters: radius, observer_height: height}
       })
-      if (map.current.getSource('viewshed')) {
-        map.current.removeLayer('viewshed-layer')
-        map.current.removeSource('viewshed')
+      if (map.current.getSource('viewshed')){
+        map.current.getSource('viewshed').setData({type: 'Feature', geometry: res.data.visible_area}) 
+      }else{
+        map.current.addSource('viewshed', {type: 'geojson', data: {type: 'Feature', geometry: res.data.visible_area}})
+        map.current.addLayer({ id: 'viewshed-layer', type: 'fill', source: 'viewshed', paint: { 'fill-color': '#2ecc71', 'fill-opacity': 0.4 } })
       }
-      map.current.addSource('viewshed', { type: 'geojson', data: { type: 'Feature', geometry: res.data.visible_area } })
-      map.current.addLayer({ id: 'viewshed-layer', type: 'fill', source: 'viewshed', paint: { 'fill-color': '#2ecc71', 'fill-opacity': 0.4 } })
-      setStatus('👁️ Viewshed rendered!')
-    } catch (err) { setStatus('Viewshed failed: ' + err.message) }
+      setStatus(`viewshed: ${radius}m radius, ${height}m height`)
+    }catch(err){
+      setStatus('viewshed failed: ' +  err.message)
+    }
+  }, [])
+
+  const throttledViewshed = useThrottle(runViewshed, 150)
+
+  const handleViewshedRadiusSlider = (e) => {
+    const radius = Number(e.target.value)
+    setViewshedRadius(radius)
+    throttledViewshed(radius, viewshedHeight)
+  }
+
+  const handleViewshedHeightSlider = (e) => {
+    const height = Number(e.target.value)
+    setViewshedHeight(height)
+    throttledViewshed(viewshedRadius, height)
+  }
+
+  const clearViewshed = () => {
+    if(map.current.getSource('viewshed')){
+      map.current.removeLayer('viewshed-layer')
+      map.current.removeSource('viewshed')
+      setStatus('viewshed removed')
+    }
   }
 
   const handleRoute = async () => {
@@ -405,7 +439,7 @@ const clearBuffer = () => {
           <SidebarBtn icon="🔍" active={activePanel === 'search'} tooltip="Search" onClick={() => togglePanel('search')} />
           <div style={styles.sidebarDivider} />
           <SidebarBtn icon="⭕" active={activePanel === 'buffer'} tooltip="Buffer" onClick={() => togglePanel('buffer')} />
-          <SidebarBtn icon="👁️" tooltip="Viewshed" onClick={handleViewshed} />
+          <SidebarBtn icon="👁️" active={activePanel === 'viewshed'} tooltip="Viewshed" onClick={() => togglePanel('viewshed')} />
           <SidebarBtn icon="🗺️" active={activePanel === 'route'} tooltip="Shortest Path" onClick={() => togglePanel('route')} />
         </div>
         <div style={styles.sidebarBottom}>
@@ -441,6 +475,32 @@ const clearBuffer = () => {
           Drag to adjust buffer diameter!
         </p>
         <PanelBtn onClick={clearBuffer} color='#999'>Clear Buffer</PanelBtn>
+      </Panel>
+
+      {/*Viewshed panel*/}
+      <Panel title="Viewshed" open={activePanel === 'viewshed'} onClose={() => setActivePanel(null)}>
+        <SliderField
+        label="Radius"
+        value={viewshedRadius}
+        min = {200}
+        max ={3000}
+        step = {100}
+        unit = "m"
+        onChange={handleViewshedRadiusSlider}
+        />
+        <SliderField
+        label="Observer Height"
+        value={viewshedHeight}
+        min = {1}
+        max ={50}
+        step = {1}
+        unit = "m"
+        onChange={handleViewshedHeightSlider}
+        />
+        <p style={{ fontSize: '12px', color: '#999', marginBottom: '12px'}}>
+          Drag to adjust radius and height
+        </p>
+        <PanelBtn onClick={clearViewshed} color="#999">Clear Viewshed</PanelBtn>
       </Panel>
 
       {/* Route Panel */}
