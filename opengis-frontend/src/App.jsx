@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
+import { Search, CircleDashed, LandPlot, Route, Info } from 'lucide-react'
 import maplibregl, { Popup } from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
 import axios from 'axios'
@@ -52,17 +53,19 @@ const styles = {
   },
   statusBar: {
     position: 'fixed',
-    bottom: '24px',
-    left: '70px',
-    background: 'white',
-    padding: '8px 16px',
-    borderRadius: '20px',
-    fontSize: '12px',
-    color: '#333',
-    boxShadow: '0 2px 8px rgba(0,0,0,0.2)',
+    top: '0',
+    left: '50px',
+    right: '0',
+    background: '#1a1a1a',
+    padding: '10px 20px',
+    fontSize: '13px',
+    color: 'white',
     zIndex: 100,
-    maxWidth: '500px',
     pointerEvents: 'none',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderBottom: '1px solid #333',
   }
 }
 
@@ -94,16 +97,22 @@ function SidebarBtn({ icon, active, tooltip, onClick }) {
 function Panel({ title, open, onClose, children }) {
   return (
     <div style={{
-      width: open ? '320px' : '0',
+      position: 'fixed',
+      top: '0',
+      left: '50px',
+      height: '100%',
+      width: '320px',
       height: '100%',
       background: 'white',
-      overflow: 'hidden',
       flexShrink: 0,
       display: 'flex',
+      transform: open? 'translateX(0)' : 'translateX(-100%)',
       flexDirection: 'column',
-      transition: 'width 0.25s ease',
-      boxShadow: open ? '2px 0 12px rgba(0,0,0,0.3)' : 'none',
+      transition: 'transform 0.25s ease',
+      boxShadow: open ? '4px 0 16px rgba(0,0,0,0.2)' : 'none',
+      zIndex: 9,
     }}>
+
       <div style={{
         display: 'flex',
         alignItems: 'center',
@@ -243,7 +252,7 @@ function App() {
         .setPopup(new maplibregl.Popup().setText(`${lat.toFixed(5)}, ${lng.toFixed(5)}`))
         .addTo(map.current)
       currentLocation.current ={lat, lng}
-      setStatus(`📍 Pinned: ${lat.toFixed(5)}, ${lng.toFixed(5)}`)
+      setStatus(`Pinned —  ${lat.toFixed(5)}, ${lng.toFixed(5)}`)
 
       if(map.current.getSource('buffer')){
         throttledBuffer(bufferDistance)
@@ -306,7 +315,7 @@ function App() {
         .setPopup(new maplibregl.Popup().setText(displayAddress))
         .addTo(map.current)
       currentLocation.current = { lat: latitude, lng: longitude }
-      setStatus(`📍 Found: ${displayAddress}`)
+      setStatus(`Location Found — ${displayAddress}`)
     } catch (err) { setStatus('Location not found') }
   }
 
@@ -328,7 +337,7 @@ function App() {
       map.current.addSource('buffer', { type: 'geojson', data: { type: 'Feature', geometry: res.data.geometry } })
       map.current.addLayer({ id: 'buffer-layer', type: 'fill', source: 'buffer', paint: { 'fill-color': '#3498db', 'fill-opacity': 0.3 } })
     }
-    setStatus(`⭕ Buffer: ${distance}m around pinned location`)
+    setStatus(`Buffer active — ${distance}m`)
   } catch (err) {
     setStatus('Buffer failed')
   }
@@ -369,7 +378,7 @@ const clearBuffer = () => {
         map.current.addSource('viewshed', {type: 'geojson', data: {type: 'Feature', geometry: res.data.visible_area}})
         map.current.addLayer({ id: 'viewshed-layer', type: 'fill', source: 'viewshed', paint: { 'fill-color': '#2ecc71', 'fill-opacity': 0.4 } })
       }
-      setStatus(`viewshed: ${radius}m radius, ${height}m height`)
+      setStatus(`Viewshed active — ${radius}m radius, ${height}m height`)
     }catch(err){
       setStatus('viewshed failed: ' +  err.message)
     }
@@ -426,7 +435,7 @@ const clearBuffer = () => {
       map.current.fitBounds(bounds, { padding: 80 })
       const km = (res.data.distance_meters / 1000).toFixed(2)
       const mins = Math.round(res.data.duration_seconds / 60)
-      setStatus(`🗺️ Route: ${km} km — ${mins} mins driving`)
+      setStatus(`Route — ${km} km, ${mins} mins `)
     } catch (err) { setStatus('Route failed: ' + err.message) }
   }
 
@@ -436,15 +445,15 @@ const clearBuffer = () => {
       {/* Sidebar */}
       <div style={styles.sidebar}>
         <div style={styles.sidebarTop}>
-          <SidebarBtn icon="🔍" active={activePanel === 'search'} tooltip="Search" onClick={() => togglePanel('search')} />
+          <SidebarBtn icon={<Search size={20} strokeWidth={1.5} />} active={activePanel === 'search'} tooltip="Search" onClick={() => togglePanel('search')} />
           <div style={styles.sidebarDivider} />
-          <SidebarBtn icon="⭕" active={activePanel === 'buffer'} tooltip="Buffer" onClick={() => togglePanel('buffer')} />
-          <SidebarBtn icon="👁️" active={activePanel === 'viewshed'} tooltip="Viewshed" onClick={() => togglePanel('viewshed')} />
-          <SidebarBtn icon="🗺️" active={activePanel === 'route'} tooltip="Shortest Path" onClick={() => togglePanel('route')} />
+          <SidebarBtn icon={<CircleDashed size={20} strokeWidth={1.5} />} active={activePanel === 'buffer'} tooltip="Buffer" onClick={() => togglePanel('buffer')} />
+          <SidebarBtn icon={<LandPlot  size={20} strokeWidth={1.5} />} active={activePanel === 'viewshed'} tooltip="Viewshed" onClick={() => togglePanel('viewshed')} />
+          <SidebarBtn icon={<Route size={20} strokeWidth={1.5} />} active={activePanel === 'route'} tooltip="Shortest Path" onClick={() => togglePanel('route')} />
         </div>
         <div style={styles.sidebarBottom}>
           <div style={styles.sidebarDivider} />
-          <SidebarBtn icon="ℹ️" tooltip="About" />
+          <SidebarBtn icon={<Info size={20} strokeWidth={1.5} />} tooltip="About" />
         </div>
       </div>
 
