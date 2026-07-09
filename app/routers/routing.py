@@ -64,3 +64,40 @@ async def nearby_routes(
                 continue
 
     return {"results": results}
+
+@router.get("/isochrone")
+async def isochrone(
+    lat: float, lng: float,
+    radius_km: float = 3,
+    grid_size: int = 8
+):
+    try:
+        # build a grid of points around (lat, lng)
+        points = [(lng, lat)]  # index 0 = origin
+        step = (radius_km / 111) * 2 / grid_size  # rough km->degrees
+        for i in range(grid_size):
+            for j in range(grid_size):
+                offset_lat = lat + (i - grid_size/2) * step
+                offset_lng = lng + (j - grid_size/2) * step
+                points.append((offset_lng, offset_lat))
+
+        coords_str = ";".join(f"{lng_},{lat_}" for lng_, lat_ in points)
+        url = f"http://router.project-osrm.org/table/v1/driving/{coords_str}"
+        params = {"sources": "0", "annotations": "duration"}
+
+        async with httpx.AsyncClient(timeout=15) as client:
+            res = await client.get(url, params=params)
+            data = res.json()
+
+        if data.get("code") != "Ok":
+            raise HTTPException(status_code=404, detail="Isochrone calculation failed")
+
+        durations = data["durations"][0]  # travel times from origin to every point
+        results = [
+            {"lng": lng_, "lat": lat_, "duration_seconds": dur}
+            for (lng_, lat_), dur in zip(points[1:], durations[1:])
+            if dur is not None
+        ]
+        return {"points": results}
+    except httpx.RequestError:
+        raise HTTPException(status_code=503, detail="Routing service unavailable")

@@ -1,8 +1,11 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
-import { Search, CircleDashed, LandPlot, Route, Info } from 'lucide-react'
+import { Search, CircleDashed, LandPlot, Route, Info, Layers, Timer, Pentagon} from 'lucide-react'
 import maplibregl, { Popup } from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
 import axios from 'axios'
+import { TerraDraw, TerraDrawPolygonMode, TerraDrawSelectMode } from 'terra-draw'
+import { TerraDrawMapLibreGLAdapter } from 'terra-draw-maplibre-gl-adapter'
+
 
 
 const API = 'http://127.0.0.1:8000'
@@ -226,11 +229,19 @@ function App() {
   const [address, setAddress] = useState('')
   const [routeStart, setRouteStart] = useState('')
   const [routeEnd, setRouteEnd] = useState('')
+  const [isochroneRadius, setIsochroneRadius] = useState(3)
   const [bufferDistance, setBufferDistance] = useState(500)
   const [viewshedRadius, setViewshedRadius] = useState(1000)
   const [viewshedHeight, setViewshedHeight] = useState(10)
   const currentMarker = useRef(null)
   const currentLocation = useRef(null)
+  const [shapes, setShapes] = useState([])
+  const [selectedShapeIds, setSelectedShapeIds] = useState([])
+  const shapeCounter = useRef(0)
+  const drawRef = useRef(null)
+  const currentBufferGeometry = useRef(null)
+  const [isDrawing, setIsDrawing] = useState(false)
+  const isDrawingRef = useRef(false)
 
   useEffect(() => {
     if (map.current) return
@@ -244,7 +255,28 @@ function App() {
 
     map.current.addControl(new maplibregl.NavigationControl(), 'top-right')
 
+    map.current.on('load', () => {
+      const draw = new TerraDraw({
+        adapter: new TerraDrawMapLibreGLAdapter({ map: map.current, lib: maplibregl }),
+        modes: [new TerraDrawPolygonMode(), new TerraDrawSelectMode()]
+      })
+      draw.start()
+      drawRef.current = draw
+
+      draw.on('finish', (id) => {
+        const feature = draw.getSnapshot().find(f => f.id === id)
+        if (feature) {
+          addShape(feature.geometry, '#9b59b6')
+          draw.clear()
+          draw.setMode('select')
+          setIsDrawing(false)
+          isDrawingRef = false
+        }
+      })
+    })
+
     map.current.on('click', (e) =>{
+      if (isDrawingRef.current) return 
       const{lng, lat} = e.lngLat
       if(currentMarker.current) currentMarker.current.remove()
       currentMarker.current = new maplibregl.Marker({color: '#e74c3c'})
@@ -293,7 +325,12 @@ function App() {
     map.current.addControl(new RecenterControl(), 'bottom-right')
   }, [])
 
-  const togglePanel = (name) => setActivePanel(prev => prev === name ? null : name)
+  const togglePanel = (name) => {
+    if (drawRef.current) drawRef.current.setMode('select')
+    setIsDrawing(false)
+    isDrawingRef.current = false
+    setActivePanel(prev => prev === name ? null : name)
+  }
 
   const handleGeocode = async () => {
     try {
@@ -319,7 +356,38 @@ function App() {
     } catch (err) { setStatus('Location not found') }
   }
 
- const runBuffer = useCallback(async (distance) => {
+  const addShape = (geometry, color = '#3498db') => {
+    const id = shapeCounter.current++
+    const layerId = `shape-${id}`
+    map.current.addSource(layerId, { type: 'geojson', data: { type: 'Feature', geometry } })
+    map.current.addLayer({ id: layerId, type: 'fill', source: layerId, paint: { 'fill-color': color, 'fill-opacity': 0.35 } })
+    setShapes(prev => [...prev, { id, geometry }])
+  }
+
+  const removeShape = (id) => {
+    const layerId = `shape-${id}`
+    if (map.current.getLayer(layerId)) map.current.removeLayer(layerId)
+    if (map.current.getSource(layerId)) map.current.removeSource(layerId)
+    setShapes(prev => prev.filter(s => s.id !== id))
+    setSelectedShapeIds(prev => prev.filter(sid => sid !== id))
+  }
+
+  const toggleDrawingPolygon = () => {
+    if (!drawRef.current) return
+    if (isDrawing) {
+      drawRef.current.setMode('select')
+      setIsDrawing(false)
+      isDrawingRef.current = false
+      setStatus('Drawing cancelled')
+    } else {
+      drawRef.current.setMode('polygon')
+      setIsDrawing(true)
+      isDrawingRef.current = true
+      setStatus('Click points to draw a polygon, double-click to finish')
+    }
+  }
+
+  const runBuffer = useCallback(async (distance) => {
   if (!currentLocation.current) {
     setStatus('Search or pin a location first!')
     return
@@ -330,6 +398,8 @@ function App() {
       { type: 'Point', coordinates: [lng, lat] },
       { params: { distance_meters: distance } }
     )
+
+    currentBufferGeometry.current = res.data.geometry
 
     if (map.current.getSource('buffer')) {
       map.current.getSource('buffer').setData({ type: 'Feature', geometry: res.data.geometry })
@@ -342,6 +412,15 @@ function App() {
     setStatus('Buffer failed')
   }
 }, [])
+
+const commitBuffer = () => {
+  if (!currentBufferGeometry.current) {
+    setStatus('No active buffer to add')
+    return
+  }
+  addShape(currentBufferGeometry.current, '#3498db')
+  setStatus('Buffer added to shapes')
+}
 
 const throttledBuffer = useThrottle(runBuffer, 150)
 
@@ -358,10 +437,6 @@ const clearBuffer = () => {
     setStatus('Buffer removed')
   }
 }
-
-
-
-
   const runViewshed = useCallback (async (radius, height) => {
     if(!currentLocation.current){
       setStatus('location is not Pinned!')
@@ -383,6 +458,53 @@ const clearBuffer = () => {
       setStatus('viewshed failed: ' +  err.message)
     }
   }, [])
+
+  const runIsochrone = async () => {
+    if (!currentLocation.current) { setStatus('Pin a location first!'); return }
+    try {
+      setStatus('Calculating isochrone...')
+      const { lat, lng } = currentLocation.current
+      const res = await axios.get(`${API}/routing/isochrone`, {
+        params: { lat, lng, radius_km: isochroneRadius, grid_size: 8 }
+      })
+      const features = res.data.points.map(p => ({
+        type: 'Feature',
+        geometry: { type: 'Point', coordinates: [p.lng, p.lat] },
+        properties: { duration: p.duration_seconds }
+      }))
+      const geojson = { type: 'FeatureCollection', features }
+
+      if (map.current.getSource('isochrone')) {
+        map.current.getSource('isochrone').setData(geojson)
+      } else {
+        map.current.addSource('isochrone', { type: 'geojson', data: geojson })
+        map.current.addLayer({
+          id: 'isochrone-layer', type: 'heatmap', source: 'isochrone',
+          paint: {
+            'heatmap-weight': ['interpolate', ['linear'], ['get', 'duration'], 0, 1, 900, 0],
+            'heatmap-radius': 40,
+            'heatmap-opacity': 0.7,
+            'heatmap-color': [
+              'interpolate', ['linear'], ['heatmap-density'],
+              0, 'rgba(0,0,0,0)',
+              0.3, '#2ecc71',
+              0.6, '#f1c40f',
+              1, '#e74c3c'
+            ]
+          }
+        })
+      }
+      setStatus('Isochrone rendered')
+    } catch (err) { setStatus('Isochrone failed: ' + err.message) }
+  }
+
+  const clearIsochrone = () => {
+    if (map.current.getSource('isochrone')) {
+      map.current.removeLayer('isochrone-layer')
+      map.current.removeSource('isochrone')
+      setStatus('Isochrone removed')
+    }
+  }
 
   const throttledViewshed = useThrottle(runViewshed, 150)
 
@@ -406,6 +528,34 @@ const clearBuffer = () => {
     }
   }
 
+  const toggleShapeSelect = (id) => {
+    setSelectedShapeIds(prev =>
+      prev.includes(id) ? prev.filter(sid => sid !== id)
+      : prev.length < 2 ? [...prev, id] : prev
+    )
+  }
+
+  const runOverlay = async (operation) => {
+    if (selectedShapeIds.length !== 2) return
+    try {
+      setStatus(`Running ${operation}...`)
+      const [idA, idB] = selectedShapeIds
+      const shapeA = shapes.find(s => s.id === idA)
+      const shapeB = shapes.find(s => s.id === idB)
+      const res = await axios.post(`${API}/spatial/${operation}`, {
+        geometry1: shapeA.geometry,
+        geometry2: shapeB.geometry
+      })
+      removeShape(idA)
+      removeShape(idB)
+      addShape(res.data.geometry, '#e74c3c')
+      setSelectedShapeIds([])
+      setStatus(`${operation} complete`)
+    } catch (err) {
+      setStatus(`${operation} failed: ` + (err.response?.data?.detail || err.message))
+    }
+  }
+
   const handleRoute = async () => {
     try {
       setStatus('Calculating route...')
@@ -420,6 +570,13 @@ const clearBuffer = () => {
       }
       const start = await resolveLocation(routeStart)
       const end = await resolveLocation(routeEnd)
+
+      if (currentMarker.current) currentMarker.current.remove()
+      currentMarker.current = new maplibregl.Marker({ color: '#e74c3c' })
+        .setLngLat([end.lng, end.lat])
+        .addTo(map.current)
+      currentLocation.current = end
+
       if (map.current.getSource('route')) {
         map.current.removeLayer('route-layer')
         map.current.removeSource('route')
@@ -439,6 +596,7 @@ const clearBuffer = () => {
     } catch (err) { setStatus('Route failed: ' + err.message) }
   }
 
+  
   return (
     <div style={styles.container}>
 
@@ -450,6 +608,9 @@ const clearBuffer = () => {
           <SidebarBtn icon={<CircleDashed size={20} strokeWidth={1.5} />} active={activePanel === 'buffer'} tooltip="Buffer" onClick={() => togglePanel('buffer')} />
           <SidebarBtn icon={<LandPlot  size={20} strokeWidth={1.5} />} active={activePanel === 'viewshed'} tooltip="Viewshed" onClick={() => togglePanel('viewshed')} />
           <SidebarBtn icon={<Route size={20} strokeWidth={1.5} />} active={activePanel === 'route'} tooltip="Shortest Path" onClick={() => togglePanel('route')} />
+          <SidebarBtn icon={<Layers size={20} strokeWidth={1.5} />} active={activePanel === 'shapes'} tooltip="Shapes" onClick={() => togglePanel('shapes')} />
+          <SidebarBtn icon={<Timer size={20} strokeWidth={1.5} />} active={activePanel === 'isochrone'} tooltip="Drive Time" onClick={() => togglePanel('isochrone')} />
+          <SidebarBtn icon={<Pentagon size={20} strokeWidth={1.5} />} active={isDrawing} tooltip="Draw Polygon" onClick={toggleDrawingPolygon} />
         </div>
         <div style={styles.sidebarBottom}>
           <div style={styles.sidebarDivider} />
@@ -483,6 +644,7 @@ const clearBuffer = () => {
         <p style= {{ fontSize: '12px', color: '#999', marginBottom: '12px'}}>
           Drag to adjust buffer diameter!
         </p>
+        <PanelBtn onClick={commitBuffer}>Add to Shapes</PanelBtn>
         <PanelBtn onClick={clearBuffer} color='#999'>Clear Buffer</PanelBtn>
       </Panel>
 
@@ -528,6 +690,49 @@ const clearBuffer = () => {
         />
         <div style={{ height: '1px', background: '#eee', margin: '12px 0' }} />
         <PanelBtn onClick={handleRoute} color="#8B4513">Find Route</PanelBtn>
+      </Panel>
+
+      {/* Shapes Panel */}
+      <Panel title="Shapes" open={activePanel === 'shapes'} onClose={() => setActivePanel(null)}>
+        <p style={{ fontSize: '12px', color: '#999', marginBottom: '12px' }}>
+          Select exactly 2 shapes to combine.
+        </p>
+        {shapes.length === 0 && <p style={{ fontSize: '13px', color: '#666' }}>No shapes yet — add a buffer or draw a polygon.</p>}
+        {shapes.map(s => (
+          <div key={s.id} style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+            <input
+              type="checkbox"
+              checked={selectedShapeIds.includes(s.id)}
+              onChange={() => toggleShapeSelect(s.id)}
+              disabled={!selectedShapeIds.includes(s.id) && selectedShapeIds.length >= 2}
+            />
+            <span style={{ fontSize: '13px' }}>Shape {s.id}</span>
+            <button onClick={() => removeShape(s.id)} style={{ marginLeft: 'auto', border: 'none', background: 'none', color: '#999', cursor: 'pointer' }}>✕</button>
+          </div>
+        ))}
+        {selectedShapeIds.length === 2 && (
+          <>
+            <PanelBtn onClick={() => runOverlay('intersect')} color="#8e44ad">Intersect</PanelBtn>
+            <PanelBtn onClick={() => runOverlay('union')} color="#8e44ad">Union</PanelBtn>
+          </>
+        )}
+      </Panel>
+
+      <Panel title="Drive Time" open={activePanel === 'isochrone'} onClose={() => setActivePanel(null)}>
+        <SliderField
+          label="Radius"
+          value={isochroneRadius}
+          min={1}
+          max={10}
+          step={1}
+          unit="km"
+          onChange={e => setIsochroneRadius(Number(e.target.value))}
+        />
+        <p style={{ fontSize: '12px', color: '#999', marginBottom: '12px' }}>
+          Pin a location, then calculate approximate drive-time coverage. Green = fast, red = slow.
+        </p>
+        <PanelBtn onClick={runIsochrone}>Calculate</PanelBtn>
+        <PanelBtn onClick={clearIsochrone} color="#999">Clear</PanelBtn>
       </Panel>
 
       {/* Map */}

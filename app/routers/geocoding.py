@@ -6,6 +6,7 @@ router = APIRouter(prefix= "/geocode", tags=["geocoding"])
 
 geolocator = Nominatim(user_agent= "opengis_kenji_gis", timeout=15, domain="Nominatim.openstreetmap.org")
 geocode = RateLimiter(geolocator.geocode, min_delay_seconds= 1)
+reverse_geocode_limited = RateLimiter(geolocator.reverse, min_delay_seconds=1)
 @router.get("/forward") 
 async def forward_geocode(address: str):
     import re
@@ -23,7 +24,7 @@ async def forward_geocode(address: str):
             "latitude": location.latitude,
             "longitude": location.longitude,
             "geojson": {
-                "type": "point",
+                "type": "Point",
                 "coordinates": [location.longitude, location.latitude]
             }
         }
@@ -35,7 +36,7 @@ async def forward_geocode(address: str):
 @router.get("/reverse")
 async def reverse_geocode(latitude: float, longitude: float):
     try:
-        location = geolocator.reverse(f"{latitude}, {longitude}")
+        location = reverse_geocode_limited(f"{latitude}, {longitude}")
         if not location:
             raise HTTPException(status_code=404, detail="Location not found")
         return{
