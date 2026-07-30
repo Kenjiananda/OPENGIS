@@ -9,7 +9,8 @@ async def get_nearby_features(
     lat: float,
     lng: float,
     radius_m: float = 5000,
-    limit: int = 20
+    limit: int = 20,
+    category: str | None = None
 ):
     point = func.ST_SetSRID(func.ST_MakePoint(lng, lat), 4326)
 
@@ -22,14 +23,17 @@ async def get_nearby_features(
         select(
             SpatialFeature.id,
             SpatialFeature.name,
+            SpatialFeature.address,
+            SpatialFeature.category,
             func.ST_X(SpatialFeature.geometry).label("lng"),
             func.ST_Y(SpatialFeature.geometry).label("lat"),
             distance
         )
         .where(func.ST_DWithin(feature_geog, point_geog, radius_m))
-        .order_by(distance)
-        .limit(limit)
     )
+    if category is not None:
+        stmt = stmt.where(SpatialFeature.category == category)
+    stmt = stmt.order_by(distance).limit(limit)
 
     result = await db.execute(stmt)
     return [dict(row._mapping) for row in result]

@@ -6,6 +6,7 @@ from app.routers import geocoding
 from app.routers import spatial
 from app.routers import viewshed
 from app.routers import routing
+from app.routers import assistant
 
 
 app = FastAPI(title="OpenGIS API")
@@ -14,6 +15,7 @@ app.include_router(geocoding.router)
 app.include_router(spatial.router)
 app.include_router(viewshed.router)
 app.include_router(routing.router)
+app.include_router(assistant.router)
 
 app.add_middleware(
     CORSMiddleware,

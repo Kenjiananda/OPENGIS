@@ -908,7 +908,7 @@ const clearBuffer = ({ silent = false } = {}) => {
       {/* Map */}
       <div ref={mapContainer} style={styles.map} />
 
-      {/* Status bar */}
+    
 
     </div>
   )

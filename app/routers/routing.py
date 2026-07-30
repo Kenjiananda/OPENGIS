@@ -39,9 +39,10 @@ async def nearby_routes(
     lat: float = Query(..., ge=-90, le=90),
     lng: float= Query(..., ge=-180, le=180),
     radius_m: float = Query(5000, gt= 0, le=50000),
+    category: str | None = Query(None),
     db: AsyncSession = Depends(get_db)
 ):
-    candidates = await get_nearby_features(db, lat, lng, radius_m)
+    candidates = await get_nearby_features(db, lat, lng, radius_m, category=category)
     if not candidates:
         return {"results": []}
 
@@ -56,6 +57,10 @@ async def nearby_routes(
                     results.append({
                         "id": feature["id"],
                         "name": feature["name"],
+                        "address": feature["address"],
+                        "category": feature["category"],
+                        "lat": feature["lat"],
+                        "lng": feature["lng"],
                         "straight_line_m": feature["straight_dist"],
                         "driving_distance_m": data["routes"][0]["distance"],
                         "driving_duration_s": data["routes"][0]["duration"],
@@ -92,7 +97,7 @@ async def isochrone(
         if data.get("code") != "Ok":
             raise HTTPException(status_code=404, detail="Isochrone calculation failed")
 
-        durations = data["durations"][0]  # travel times from origin to every point
+        durations = data["durations"][0]     # travel times from origin to every point
         results = [
             {"lng": lng_, "lat": lat_, "duration_seconds": dur}
             for (lng_, lat_), dur in zip(points[1:], durations[1:])

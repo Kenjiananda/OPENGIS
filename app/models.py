@@ -8,3 +8,5 @@ class SpatialFeature(Base):
     id       = Column(Integer, primary_key=True)
     name     = Column(String)
     geometry = Column(Geometry(geometry_type="GEOMETRY", srid=4326))
+    category = Column(String, nullable=True)
+    address  = Column(String, nullable=True)
