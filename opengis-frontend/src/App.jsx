@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
-import { Search, CircleDashed, LandPlot, Route, Info, Layers, Timer, Pentagon, MapPin } from 'lucide-react'
+import { Search, CircleDashed, LandPlot, Route, Info, Layers, Timer, Pentagon, MapPin, AtSignIcon } from 'lucide-react'
 import maplibregl, { Popup } from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
 import axios from 'axios'
@@ -242,16 +242,17 @@ function useThrottle(callback, delay){
   }, [callback, delay])
 }
 
-function getNextDefaultName(shapesList) {
+function getNextDefaultName(shapesList, prefix = 'Shape') {
+  const pattern = new RegExp(`^${prefix} (\\d+)$`)
   const used = new Set(
     shapesList
-      .map(s => /^Shape (\d+)$/.exec(s.name))
+      .map(s => pattern.exec(s.name))
       .filter(Boolean)
       .map(m => Number(m[1]))
   )
   let n = 1
   while (used.has(n)) n++
-  return `Shape ${n}`
+  return `${prefix} ${n}`
 }
 
 function App() {
@@ -260,6 +261,7 @@ function App() {
   const [status, setStatus] = useState('')
   const [activePanel, setActivePanel] = useState(null)
   const [address, setAddress] = useState('')
+  const [assistantInput, setAssistantInput] = useState('')
   const [routeStart, setRouteStart] = useState('')
   const [routeEnd, setRouteEnd] = useState('')
   const [isochroneRadius, setIsochroneRadius] = useState(3)
@@ -276,6 +278,11 @@ function App() {
   const currentBufferGeometry = useRef(null)
   const [isDrawing, setIsDrawing] = useState(false)
   const isDrawingRef = useRef(false)
+  const activePanelRef = useRef(null)
+
+  useEffect(() => {
+    activePanelRef.current = activePanel
+  },[activePanel])
 
   useEffect(() => {
     if (map.current) return
@@ -300,7 +307,7 @@ function App() {
       draw.on('finish', (id) => {
         const feature = draw.getSnapshot().find(f => f.id === id)
         if (feature) {
-          addShape(feature.geometry, '#9b59b6')
+          addShape(feature.geometry, '#9b59b6', null, activePanelRef.current, 'Polygon')
           draw.clear()
           draw.setMode('select')
           setIsDrawing(false)
@@ -321,11 +328,11 @@ function App() {
       currentLocation.current ={lat, lng}
       setStatus(`Pinned —  ${lat.toFixed(5)}, ${lng.toFixed(5)}`)
 
-      if(map.current.getSource('buffer')){
+      if(map.current.getSource('buffer') && activePanelRef.current === 'buffer'){
         throttledBuffer(bufferDistance)
       }
 
-      if(map.current.getSource('viewshed')){
+      if(map.current.getSource('viewshed') && activePanelRef.current === 'viewshed'){
       throttledViewshed(viewshedRadius, viewshedHeight)
       }
     })
@@ -364,34 +371,95 @@ function App() {
     if (drawRef.current) drawRef.current.setMode('select')
     setIsDrawing(false)
     isDrawingRef.current = false
+    if (['buffer', 'viewshed', 'route', 'isochrone'].includes(name)) {
+      clearOtherPreviews(name)
+    }
     setActivePanel(prev => {
-      if (prev && prev !== name) clearFeaturePreview(prev)
       return prev === name ? null : name
     })
   }
 
-  const handleGeocode = async () => {
+  const pinLocation = async (locationText) => {
+    const isCoordinate = /^-?\d+\.?\d*\s*,\s*-?\d+\.?\d*$/.test(locationText.trim())
+    let latitude, longitude, displayAddress
+    if (isCoordinate) {
+      const [lat, lng] = locationText.split(',').map(s => parseFloat(s.trim()))
+      const res = await axios.get(`${API}/geocode/reverse`, { params: { latitude: lat, longitude: lng } })
+      latitude = res.data.latitude; longitude = res.data.longitude; displayAddress = res.data.address
+    } else {
+      const res = await axios.get(`${API}/geocode/forward`, { params: { address: locationText } })
+      latitude = res.data.latitude; longitude = res.data.longitude; displayAddress = res.data.address
+    }
+    if (currentMarker.current) currentMarker.current.remove()
+    map.current.flyTo({ center: [longitude, latitude], zoom: 15 })
+    currentMarker.current = new maplibregl.Marker({ color: '#e74c3c' })
+      .setLngLat([longitude, latitude])
+      .setPopup(new maplibregl.Popup().setText(displayAddress))
+      .addTo(map.current)
+    currentLocation.current = { lat: latitude, lng: longitude }
+    return { lat: latitude, lng: longitude, displayAddress }
+  }
+
+  const handleGeocode = async (overrideAddress) => {
     try {
       setStatus('Searching...')
-      const isCoordinate = /^-?\d+\.?\d*\s*,\s*-?\d+\.?\d*$/.test(address.trim())
-      let latitude, longitude, displayAddress
-      if (isCoordinate) {
-        const [lat, lng] = address.split(',').map(s => parseFloat(s.trim()))
-        const res = await axios.get(`${API}/geocode/reverse`, { params: { latitude: lat, longitude: lng } })
-        latitude = res.data.latitude; longitude = res.data.longitude; displayAddress = res.data.address
-      } else {
-        const res = await axios.get(`${API}/geocode/forward`, { params: { address } })
-        latitude = res.data.latitude; longitude = res.data.longitude; displayAddress = res.data.address
-      }
-      if (currentMarker.current) currentMarker.current.remove()
-      map.current.flyTo({ center: [longitude, latitude], zoom: 15 })
-      currentMarker.current = new maplibregl.Marker({ color: '#e74c3c' })
-        .setLngLat([longitude, latitude])
-        .setPopup(new maplibregl.Popup().setText(displayAddress))
-        .addTo(map.current)
-      currentLocation.current = { lat: latitude, lng: longitude }
+      const query = overrideAddress ?? address
+      const { displayAddress } = await pinLocation(query)
       setStatus(`Location Found — ${displayAddress}`)
     } catch (err) { setStatus('Location not found') }
+  }
+
+  
+
+  const dispatch = {
+    geocode: (params) => handleGeocode(params.location),
+    no_action: (params) => setStatus(params.reason),
+    create_buffer: async (params) => {
+      try {
+        await pinLocation(params.location)
+        setBufferDistance(params.distance_meters)
+        await runBuffer(params.distance_meters)
+        commitBuffer()
+      } catch (err) {
+        setStatus('Could not create buffer')
+      }
+    },
+    viewshed: async (params) => {
+      try {
+        await pinLocation(params.location)
+        setViewshedRadius(params.radius_meters)
+        setViewshedHeight(params.observer_height)
+        await runViewshed(params.radius_meters, params.observer_height)
+      } catch (err) {
+        setStatus('Could not calculate viewshed')
+      }
+    },
+    isochrone: async (params) => {
+      try {
+        await pinLocation(params.location)
+        setIsochroneRadius(params.radius_km)
+        await runIsochrone(params.radius_km)
+      } catch (err) {
+        setStatus('Could not calculate isochrone')
+      }
+    },
+    find_route: (params) => handleRoute(params.start_location, params.end_location),
+  }
+
+
+  const handleAssistantQuery = async(text) => {
+    try{
+      const res = await axios.post(`${API}/assistant/query`, {message: text})
+      const {action, params} = res.data
+      const handler = dispatch[action]
+      if (handler){
+        handler(params)
+      }else{
+        console.log('Unknown action', action)
+      }     
+    }catch (err){
+      console.log('Assistant query failed', err)
+    }
   }
 
   const getLiveLocation = () => new Promise((resolve, reject) => {
@@ -447,12 +515,12 @@ function App() {
     }
   }
 
-  const addShape = (geometry, color = '#3498db', name = null) => {
+  const addShape = (geometry, color = '#3498db', name = null, origin = activePanel, typeLabel = 'Shape') => {
     const id = shapeCounter.current++
     const layerId = `shape-${id}`
     map.current.addSource(layerId, { type: 'geojson', data: { type: 'Feature', geometry } })
     map.current.addLayer({ id: layerId, type: 'fill', source: layerId, paint: { 'fill-color': color, 'fill-opacity': 0.35 } })
-    setShapes(prev => [...prev, { id, name: name || getNextDefaultName(prev), geometry }])
+    setShapes(prev => [...prev, { id, name: name || getNextDefaultName(prev, typeLabel), geometry, origin }])
   }
 
   const removeShape = (id) => {
@@ -464,6 +532,22 @@ function App() {
     setShapes(prev => prev.filter(s => s.id !== id))
     setSelectedShapeIds(prev => prev.filter(sid => sid !== id))
   }
+  
+  useEffect(() => {
+    if (!map.current) return
+    shapes.forEach(s => {
+      const layerId = `shape-${s.id}`
+      const outlineId = `shape-outline-${s.id}`
+      const visible = activePanel === 'shapes' || activePanel === s.origin
+      const visibility = visible ? 'visible' : 'none'
+      if (map.current.getLayer(layerId)) {
+        map.current.setLayoutProperty(layerId, 'visibility', visibility)
+      }
+      if (map.current.getLayer(outlineId)) {
+        map.current.setLayoutProperty(outlineId, 'visibility', visibility)
+      }
+    })
+  }, [activePanel, shapes])
 
   const renameShape = (id, newName) => {
     setShapes(prev => prev.map(s => s.id === id ? { ...s, name: newName } : s))
@@ -502,6 +586,7 @@ function App() {
       isDrawingRef.current = false
       setStatus('Drawing cancelled')
     } else {
+      clearOtherPreviews(null)
       drawRef.current.setMode('polygon')
       setIsDrawing(true)
       isDrawingRef.current = true
@@ -514,6 +599,7 @@ function App() {
     setStatus('Search or pin a location first!')
     return
   }
+  clearOtherPreviews('buffer')
   try {
     const { lat, lng } = currentLocation.current
     const res = await axios.post(`${API}/spatial/buffer`,
@@ -540,7 +626,7 @@ const commitBuffer = () => {
     setStatus('No active buffer to add')
     return
   }
-  addShape(currentBufferGeometry.current, '#3498db')
+  addShape(currentBufferGeometry.current, '#3498db',  null, undefined, 'Buffer')
   setStatus('Buffer added to shapes')
 }
 
@@ -565,6 +651,7 @@ const clearBuffer = ({ silent = false } = {}) => {
       setStatus('location is not Pinned!')
       return
     }
+    clearOtherPreviews('viewshed')
     try{
       const {lat, lng} = currentLocation.current
       const res = await axios.get(`${API}/viewshed/`,{
@@ -582,13 +669,15 @@ const clearBuffer = ({ silent = false } = {}) => {
     }
   }, [])
 
-  const runIsochrone = async () => {
+  const runIsochrone = async (overrideRadius) => {
     if (!currentLocation.current) { setStatus('Pin a location first!'); return }
+    clearOtherPreviews('isochrone')
     try {
       setStatus('Calculating isochrone...')
+      const radius = overrideRadius ?? isochroneRadius
       const { lat, lng } = currentLocation.current
       const res = await axios.get(`${API}/routing/isochrone`, {
-        params: { lat, lng, radius_km: isochroneRadius, grid_size: 8 }
+        params: { lat, lng, radius_km: radius, grid_size: 8 }
       })
       const features = res.data.points.map(p => ({
         type: 'Feature',
@@ -659,11 +748,11 @@ const clearBuffer = ({ silent = false } = {}) => {
     }
   }
 
-  const clearFeaturePreview = (panelName) => {
-    if (panelName === 'buffer') clearBuffer({ silent: true })
-    else if (panelName === 'viewshed') clearViewshed({ silent: true })
-    else if (panelName === 'route') clearRoute({ silent: true })
-    else if (panelName === 'isochrone') clearIsochrone({ silent: true })
+  const clearOtherPreviews = (keep) => {
+    if(keep !== 'buffer') clearBuffer({silent: true})
+    if(keep !== 'viewshed') clearViewshed({silent: true})
+    if(keep !== 'route') clearRoute({silent: true})
+    if(keep !== 'isochrone') clearIsochrone({silent: true})
   }
 
   const toggleShapeSelect = (id) => {
@@ -681,7 +770,7 @@ const clearBuffer = ({ silent = false } = {}) => {
       const geometries = shapes.filter(s => selectedShapeIds.includes(s.id)).map(s => s.geometry)
       const res = await axios.post(`${API}/spatial/${operation}`, { geometries })
       selectedShapeIds.forEach(id => removeShape(id))
-      addShape(res.data.geometry, '#e74c3c')
+      addShape(res.data.geometry, '#e74c3c', null, undefined, operation.charAt(0).toUpperCase() + operation.slice(1))
       setSelectedShapeIds([])
       setStatus(`${operation} complete`)
     } catch (err) {
@@ -689,9 +778,10 @@ const clearBuffer = ({ silent = false } = {}) => {
     }
   }
 
-  const handleRoute = async () => {
+  const handleRoute = async (overrideStart, overrideEnd) => {
     try {
       setStatus('Calculating route...')
+      clearOtherPreviews('route')
       const resolveLocation = async (input) => {
         const isCoordinate = /^-?\d+\.?\d*\s*,\s*-?\d+\.?\d*$/.test(input.trim())
         if (isCoordinate) {
@@ -701,9 +791,12 @@ const clearBuffer = ({ silent = false } = {}) => {
         const res = await axios.get(`${API}/geocode/forward`, { params: { address: input } })
         return { lat: res.data.latitude, lng: res.data.longitude }
       }
-      
+
+      const startText = overrideStart ?? routeStart
+      const endText = overrideEnd ?? routeEnd
+
       let start
-      if(routeStart.trim() === ''){
+      if(startText.trim() === ''){
         try {
           start = await getLiveLocation()
         } catch (err) {
@@ -711,9 +804,9 @@ const clearBuffer = ({ silent = false } = {}) => {
           return
         }
       }else{
-        start = await resolveLocation(routeStart)
+        start = await resolveLocation(startText)
       }
-      const end = await resolveLocation(routeEnd)
+      const end = await resolveLocation(endText)
 
       if (currentMarker.current) currentMarker.current.remove()
       currentMarker.current = new maplibregl.Marker({ color: '#e74c3c' })
@@ -766,14 +859,12 @@ const clearBuffer = ({ silent = false } = {}) => {
       <Panel title="Search Location" open={activePanel === 'search'} onClose={() => setActivePanel(null)}>
         <StatusLine status={status} />
         <InputField
-          label="Address or Coordinates"
-          placeholder="e.g. Taipei 101 or 25.033, 121.564"
-          value={address}
-          onChange={e => setAddress(e.target.value)}
-          onKeyDown={e => e.key === 'Enter' && handleGeocode()}
+          label="Search or Ask the assistant"
+          placeholder="Where is Taipei 101?"
+          value={assistantInput}
+          onChange={e => setAssistantInput(e.target.value)}
+          onKeyDown={e => e.key === 'Enter' && handleAssistantQuery(assistantInput)}
         />
-        <PanelBtn onClick={handleGeocode}>Search</PanelBtn>
-        <PanelBtn onClick={handleUseMyLocation}>My Location</PanelBtn>
       </Panel>
 
       {/*Buffer Panel */}
@@ -844,7 +935,7 @@ const clearBuffer = ({ silent = false } = {}) => {
           onChange={e => setRouteEnd(e.target.value)}
         />
         <div style={{ height: '1px', background: '#eee', margin: '12px 0' }} />
-        <PanelBtn onClick={handleRoute} color="#8B4513">Find Route</PanelBtn>
+        <PanelBtn onClick={() => handleRoute()} color="#8B4513">Find Route</PanelBtn>
       </Panel>
 
       {/* Shapes Panel */}
@@ -901,7 +992,7 @@ const clearBuffer = ({ silent = false } = {}) => {
         <p style={{ fontSize: '12px', color: '#999', marginBottom: '12px' }}>
           Pin a location, then calculate approximate drive-time coverage. Green = fast, red = slow.
         </p>
-        <PanelBtn onClick={runIsochrone}>Calculate</PanelBtn>
+        <PanelBtn onClick={() => runIsochrone()}>Calculate</PanelBtn>
         <PanelBtn onClick={clearIsochrone} color="#999">Clear</PanelBtn>
       </Panel>
 
