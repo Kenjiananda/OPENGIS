@@ -33,7 +33,7 @@ def no_action(reason: str) -> str:
 
 
 def geocode(location: str) -> str:
-    """Finds and shoes the location of a place, address, or landmark on the map -
+    """Finds and shoes the location of a place, address, location of the user right now(eg. where am i?), or landmark on the map -
     use this when the user just wants to see or locate somewhere, not perform a
     buffer, route, or spatial analysis.
 
@@ -53,7 +53,9 @@ def viewshed(location: str, radius_meters:int = 1000, observer_height: float = 1
     return "not executed here - resolved by the caller"    
 
 def find_route(end_location: str, start_location: str = "") -> str:
-    """Finds and shows the driving route between two locations, as well as the time needed to commute.
+    """Finds and shows the driving route between two specific, named locations, and the time needed to commute.
+    Only use this when the user names a specific destination to travel to. Do NOT use this for "nearest/closest X"
+    requests (e.g. "nearest police station"), even if the phrasing includes the word "from" — use find_nearby_features instead.
 
         Args: 
             end_location: the destination.
@@ -72,14 +74,16 @@ def isochrone(location: str, radius_km: int = 3) -> str:
 
 
 def find_nearby_features(
-    category: Literal["hospital", "police_station", "fire_department"],
+    category: str,
     location: str = "",
     radius_meters: int = 5000,
 ) -> str:
     """Finds real-world features of a given category near a location — e.g. hospitals, police stations, or fire departments.
+    Use this for "nearest", "closest", or "find X near Y" requests, even if the phrasing includes the word "from"
+    (e.g. "nearest police station from Taipei 101" means: search for police stations near Taipei 101 — not a route).
 
     Args:
-        category: The type of feature to search for.
+        category: The type of feature to search for. Must be exactly one of: hospital, police_station, fire_department.
         location: The place name or address to search around. Leave empty to search near the user's current location.
         radius_meters: How far to search, in meters.
     """

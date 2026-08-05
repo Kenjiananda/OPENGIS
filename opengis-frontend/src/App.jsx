@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
-import { Search, CircleDashed, LandPlot, Route, Info, Layers, Timer, Pentagon, MapPin, AtSignIcon } from 'lucide-react'
+import {createRoot} from 'react-dom/client'
+import { Search, CircleDashed, LandPlot, Route, Info, Layers, Timer, Pentagon, MapPin, AtSignIcon, Hospital, FireExtinguisher, MapPinned, Sun, Moon } from 'lucide-react'
 import maplibregl, { Popup } from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
 import axios from 'axios'
@@ -10,66 +11,16 @@ import { TerraDrawMapLibreGLAdapter } from 'terra-draw-maplibre-gl-adapter'
 
 const API = 'http://127.0.0.1:8000'
 
-const styles = {
-  container: {
-    width: '100vw',
-    height: '100vh',
-    display: 'flex',
-    flexDirection: 'row',
-    overflow: 'hidden',
-  },
-  sidebar: {
-    width: '50px',
-    height: '100%',
-    background: '#1a1a1a',
-    display: 'flex',
-    flexDirection: 'column',
-    alignItems: 'center',
-    padding: '8px 0',
-    zIndex: 10,
-    flexShrink: 0,
-  },
-  sidebarTop: {
-    display: 'flex',
-    flexDirection: 'column',
-    alignItems: 'center',
-    width: '100%',
-    flex: 1,
-  },
-  sidebarBottom: {
-    display: 'flex',
-    flexDirection: 'column',
-    alignItems: 'center',
-    width: '100%',
-    paddingBottom: '8px',
-  },
-  sidebarDivider: {
-    width: '30px',
-    height: '1px',
-    background: '#333',
-    margin: '4px 0',
-  },
-  map: {
-    flex: 1,
-    height: '100%',
-    minWidth: 0,
-  },
-  statusBar: {
-    position: 'fixed',
-    top: '0',
-    left: '50px',
-    right: '0',
-    background: '#1a1a1a',
-    padding: '10px 20px',
-    fontSize: '13px',
-    color: 'white',
-    zIndex: 100,
-    pointerEvents: 'none',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderBottom: '1px solid #333',
-  }
+// Tailwind class strings for the app shell. Note this theme makes --border and
+// --card pure white in light mode, so surfaces are separated by shadows and
+// `ring-ring` hairlines rather than by border colors.
+const cls = {
+  container: 'w-screen h-screen flex flex-row overflow-hidden',
+  sidebar: 'w-[50px] h-full bg-sidebar text-sidebar-foreground flex flex-col items-center py-2 z-10 shrink-0 shadow-md',
+  sidebarTop: 'flex flex-col items-center w-full flex-1',
+  sidebarBottom: 'flex flex-col items-center w-full pb-2',
+  sidebarDivider: 'w-[30px] h-px bg-ring/40 my-1',
+  map: 'flex-1 h-full min-w-0',
 }
 
 function SidebarBtn({ icon, active, tooltip, onClick }) {
@@ -77,20 +28,11 @@ function SidebarBtn({ icon, active, tooltip, onClick }) {
     <button
       onClick={onClick}
       title={tooltip}
-      style={{
-        width: '50px',
-        height: '50px',
-        background: active ? '#2d4a6e' : 'none',
-        border: 'none',
-        borderLeft: active ? '3px solid #4a9eda' : '3px solid transparent',
-        color: active ? 'white' : '#aaa',
-        cursor: 'pointer',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        fontSize: '18px',
-        transition: 'background 0.2s',
-      }}
+      className={`w-10 h-10 my-0.5 flex items-center justify-center rounded-md cursor-pointer transition-colors ${
+        active
+          ? 'bg-primary text-primary-foreground'
+          : 'text-muted-foreground hover:text-foreground hover:bg-accent'
+      }`}
     >
       {icon}
     </button>
@@ -99,40 +41,21 @@ function SidebarBtn({ icon, active, tooltip, onClick }) {
 
 function Panel({ title, open, onClose, children }) {
   return (
-    <div style={{
-      position: 'fixed',
-      top: '0',
-      left: '50px',
-      height: '100%',
-      width: '320px',
-      height: '100%',
-      background: 'white',
-      flexShrink: 0,
-      display: 'flex',
-      transform: open? 'translateX(0)' : 'translateX(-100%)',
-      flexDirection: 'column',
-      transition: 'transform 0.25s ease',
-      boxShadow: open ? '4px 0 16px rgba(0,0,0,0.2)' : 'none',
-      zIndex: 9,
-    }}>
-
-      <div style={{
-        display: 'flex',
-        alignItems: 'center',
-        padding: '16px',
-        borderBottom: '1px solid #eee',
-        gap: '10px',
-        minWidth: '320px',
-      }}>
-        <button onClick={onClose} style={{
-          background: 'none', border: 'none', cursor: 'pointer',
-          fontSize: '22px', color: '#666', lineHeight: 1,
-        }}>‹</button>
-        <span style={{ fontSize: '16px', fontWeight: 600, color: '#1a1a1a', whiteSpace: 'nowrap' }}>
-          {title}
-        </span>
+    <div
+      className={`fixed top-0 left-[50px] h-full w-[320px] shrink-0 z-[9] flex flex-col bg-card text-card-foreground transition-transform duration-[250ms] ease-out ${
+        open ? 'translate-x-0 shadow-xl' : '-translate-x-full shadow-none'
+      }`}
+    >
+      <div className="flex items-center gap-2.5 p-4 min-w-[320px] border-b border-ring/30">
+        <button
+          onClick={onClose}
+          className="bg-transparent border-none cursor-pointer text-[22px] leading-none text-muted-foreground hover:text-foreground"
+        >
+          ‹
+        </button>
+        <span className="text-base font-semibold whitespace-nowrap">{title}</span>
       </div>
-      <div style={{ padding: '16px', flex: 1, overflowY: 'auto', minWidth: '320px' }}>
+      <div className="p-4 flex-1 overflow-y-auto min-w-[320px]">
         {children}
       </div>
     </div>
@@ -141,28 +64,21 @@ function Panel({ title, open, onClose, children }) {
 
 function InputField({ label, placeholder, value, onChange, onKeyDown, overlay }) {
   return (
-    <div style={{ marginBottom: '16px' }}>
-      {label && <p style={{ fontSize: '12px', color: '#666', marginBottom: '6px', fontWeight: 500, textTransform: 'uppercase', letterSpacing: '0.5px' }}>{label}</p>}
-      <div style={{ position: 'relative' }}>
+    <div className="mb-4">
+      {label && (
+        <p className="text-xs text-muted-foreground mb-1.5 font-medium uppercase tracking-wide">{label}</p>
+      )}
+      <div className="relative">
         <input
           type="text"
           placeholder={overlay ? '' : placeholder}
           value={value}
           onChange={onChange}
           onKeyDown={onKeyDown}
-          style={{
-            width: '100%', padding: '10px 12px', border: '1px solid #ddd',
-            borderRadius: '6px', fontSize: '14px', outline: 'none',
-            fontFamily: 'Segoe UI, Arial, sans-serif',
-          }}
+          className="w-full px-3 py-2.5 rounded-md text-sm bg-input text-foreground ring-1 ring-ring outline-none focus:ring-2 focus:ring-primary"
         />
         {overlay && (
-          <div style={{
-            position: 'absolute', left: '12px', top: '50%', transform: 'translateY(-50%)',
-            display: 'flex', alignItems: 'center', gap: '6px',
-            color: '#999', opacity: 0.7, fontSize: '14px', fontWeight: 400,
-            pointerEvents: 'none',
-          }}>
+          <div className="absolute left-3 top-1/2 -translate-y-1/2 flex items-center gap-1.5 text-sm font-normal text-muted-foreground pointer-events-none">
             {overlay}
           </div>
         )}
@@ -173,12 +89,12 @@ function InputField({ label, placeholder, value, onChange, onKeyDown, overlay })
 
 function SliderField({ label, value, min, max, step, unit, onChange }) {
   return (
-    <div style={{ marginBottom: '16px' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: '6px' }}>
-        <p style={{ fontSize: '12px', color: '#666', fontWeight: 500, textTransform: 'uppercase', letterSpacing: '0.5px', margin: 0 }}>
+    <div className="mb-4">
+      <div className="flex justify-between items-baseline mb-1.5">
+        <p className="text-xs text-muted-foreground font-medium uppercase tracking-wide m-0">
           {label}
         </p>
-        <span style={{ fontSize: '13px', color: '#2d4a6e', fontWeight: 600 }}>
+        <span className="text-[13px] font-semibold text-foreground">
           {value}{unit}
         </span>
       </div>
@@ -189,24 +105,24 @@ function SliderField({ label, value, min, max, step, unit, onChange }) {
         step={step}
         value={value}
         onChange={onChange}
-        style={{
-          width: '100%',
-          accentColor: '#4a9eda',
-          cursor: 'pointer',
-        }}
+        className="w-full cursor-pointer accent-primary"
       />
     </div>
   )
 }
 
-function PanelBtn({ onClick, color = '#2d4a6e', children }) {
+const panelBtnVariants = {
+  primary: 'bg-primary text-primary-foreground hover:opacity-90',
+  secondary: 'bg-secondary text-secondary-foreground ring-1 ring-ring hover:bg-accent hover:text-accent-foreground',
+  destructive: 'bg-destructive text-destructive-foreground hover:opacity-90',
+}
+
+function PanelBtn({ onClick, variant = 'primary', children }) {
   return (
-    <button onClick={onClick} style={{
-      width: '100%', padding: '10px', background: color,
-      color: 'white', border: 'none', borderRadius: '6px',
-      cursor: 'pointer', fontSize: '14px', fontWeight: 500,
-      marginBottom: '8px', fontFamily: 'Segoe UI, Arial, sans-serif',
-    }}>
+    <button
+      onClick={onClick}
+      className={`w-full p-2.5 mb-2 rounded-md text-sm font-medium cursor-pointer border-none transition-opacity ${panelBtnVariants[variant]}`}
+    >
       {children}
     </button>
   )
@@ -215,7 +131,7 @@ function PanelBtn({ onClick, color = '#2d4a6e', children }) {
 function StatusLine({ status }) {
   if (!status) return null
   return (
-    <p style={{ fontSize: '12px', color: '#2d4a6e', background: '#eef4fa', padding: '8px 10px', borderRadius: '6px', marginBottom: '12px' }}>
+    <p className="text-xs text-foreground bg-accent ring-1 ring-ring/50 px-2.5 py-2 rounded-md mb-3">
       {status}
     </p>
   )
@@ -255,10 +171,49 @@ function getNextDefaultName(shapesList, prefix = 'Shape') {
   return `${prefix} ${n}`
 }
 
+function createIconMarkerElement(IconComponent, color, size = 30) {
+    const outer = document.createElement('div')
+    outer.style.width = `${size}px`
+    outer.style.height = `${size}px`
+
+    const inner = document.createElement('div')
+    Object.assign(inner.style, {
+      width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center',
+      background: 'white', borderRadius: '50%', border: `2px solid ${color}`,
+      boxShadow: '0 1px 4px rgba(0,0,0,0.4)', cursor: 'pointer', transition: 'transform 0.15s ease',
+    })
+    outer.appendChild(inner)
+
+    const root = createRoot(inner)
+    root.render(<IconComponent size={Math.round(size * 0.6)} color={color} strokeWidth={2.25} />)
+    return { element: outer, innerEl: inner, root }
+  }
+
+  function createImageMarkerElement(src, size = 30) {
+    const outer = document.createElement('div')
+    outer.style.width = `${size}px`
+    outer.style.height = `${size}px`
+
+    const inner = document.createElement('div')
+    Object.assign(inner.style, {
+      width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center',
+      background: 'white', borderRadius: '50%', border: '2px solid #666',
+      boxShadow: '0 1px 4px rgba(0,0,0,0.4)', cursor: 'pointer', transition: 'transform 0.15s ease',
+    })
+    const img = document.createElement('img')
+    img.src = src
+    img.style.width = '70%'; img.style.height = '70%'; img.style.objectFit = 'contain'
+    inner.appendChild(img)
+    outer.appendChild(inner)
+    return { element: outer, innerEl: inner, root: null }
+  }
+
+
 function App() {
   const mapContainer = useRef(null)
   const map = useRef(null)
   const [status, setStatus] = useState('')
+  const [theme, setTheme] = useState('light')
   const [activePanel, setActivePanel] = useState(null)
   const [address, setAddress] = useState('')
   const [assistantInput, setAssistantInput] = useState('')
@@ -268,6 +223,11 @@ function App() {
   const [bufferDistance, setBufferDistance] = useState(500)
   const [viewshedRadius, setViewshedRadius] = useState(1000)
   const [viewshedHeight, setViewshedHeight] = useState(10)
+  const [nearbyResults, setNearbyResults] = useState([])
+  const [nearbyCategory, setNearbyCategory] = useState('hospital')
+  const [nearbyRadius, setNearbyRadius] = useState(5000)
+  const [nearbySearchCenter, setNearbySearchCenter] = useState(null)
+  const nearbyMarkersRef = useRef([])
   const currentMarker = useRef(null)
   const currentLocation = useRef(null)
   const [shapes, setShapes] = useState([])
@@ -279,10 +239,17 @@ function App() {
   const [isDrawing, setIsDrawing] = useState(false)
   const isDrawingRef = useRef(false)
   const activePanelRef = useRef(null)
+  
 
   useEffect(() => {
     activePanelRef.current = activePanel
   },[activePanel])
+
+  // The theme's `.dark` block overrides the CSS custom properties, so the class
+  // has to sit on an ancestor of everything — <html> is the usual place.
+  useEffect(() => {
+    document.documentElement.classList.toggle('dark', theme === 'dark')
+  }, [theme])
 
   useEffect(() => {
     if (map.current) return
@@ -371,7 +338,7 @@ function App() {
     if (drawRef.current) drawRef.current.setMode('select')
     setIsDrawing(false)
     isDrawingRef.current = false
-    if (['buffer', 'viewshed', 'route', 'isochrone'].includes(name)) {
+    if (['buffer', 'viewshed', 'route', 'isochrone', 'nearby'].includes(name)) {
       clearOtherPreviews(name)
     }
     setActivePanel(prev => {
@@ -412,6 +379,7 @@ function App() {
   
 
   const dispatch = {
+    
     geocode: (params) => handleGeocode(params.location),
     no_action: (params) => setStatus(params.reason),
     create_buffer: async (params) => {
@@ -444,6 +412,7 @@ function App() {
       }
     },
     find_route: (params) => handleRoute(params.start_location, params.end_location),
+    find_nearby_features: (params) => runNearbyFeatures(params.category, params.location, params.radius_meters),
   }
 
 
@@ -748,11 +717,23 @@ const clearBuffer = ({ silent = false } = {}) => {
     }
   }
 
+  const clearNearbyFeatures = ({ silent = false } = {}) => {
+    nearbyMarkersRef.current.forEach(({ marker, root }) => {
+      marker.remove()
+      if (root) root.unmount()
+    })
+    nearbyMarkersRef.current = []
+    setNearbyResults([])
+    if (!silent) setStatus('Nearby results cleared')
+  }
+
+
   const clearOtherPreviews = (keep) => {
     if(keep !== 'buffer') clearBuffer({silent: true})
     if(keep !== 'viewshed') clearViewshed({silent: true})
     if(keep !== 'route') clearRoute({silent: true})
     if(keep !== 'isochrone') clearIsochrone({silent: true})
+      if(keep !== 'nearby') clearNearbyFeatures({silent: true})
   }
 
   const toggleShapeSelect = (id) => {
@@ -837,22 +818,94 @@ const clearBuffer = ({ silent = false } = {}) => {
     } catch (err) { setStatus('Route failed: ' + err.message) }
   }
 
+  // radiusMeters defaults here because the assistant may omit it — the tool schema
+  // marks it optional, and passing undefined through would blank the radius slider.
+  const runNearbyFeatures = async (category, location, radiusMeters = 5000) => {
+    try {
+      setStatus('Searching nearby...')
+      clearOtherPreviews('nearby')
+      clearNearbyFeatures({ silent: true })
+
+      let center
+      if (location && location.trim() !== '') {
+        const { lat, lng } = await pinLocation(location)
+        center = { lat, lng }
+      } else {
+        try {
+          center = await getLiveLocation()
+        } catch (err) {
+          setStatus(geoErrorMessage(err))
+          return
+        }
+      }
+
+      setNearbySearchCenter(center)
+
+      const res = await axios.get(`${API}/routing/nearby-routes`, {
+        params: { lat: center.lat, lng: center.lng, radius_m: radiusMeters, category }
+      })
+      const results = res.data.results
+
+      results.forEach(r => {
+        const { element, innerEl, root } = category === 'police_station'
+          ? createImageMarkerElement('/images/police_station_icon.png')
+          : createIconMarkerElement(category === 'hospital' ? Hospital : FireExtinguisher, category === 'hospital' ? '#c73d3d' : '#ff0000')
+        const marker = new maplibregl.Marker({ element }).setLngLat([r.lng, r.lat]).addTo(map.current)
+        nearbyMarkersRef.current.push({ id: r.id, marker, innerEl, root })
+      })
+
+      setNearbyResults(results)
+      setNearbyCategory(category)
+      setNearbyRadius(radiusMeters)
+      setActivePanel('nearby')
+
+      if (results.length > 0) {
+        const bounds = results.reduce((b, r) => b.extend([r.lng, r.lat]), new maplibregl.LngLatBounds([center.lng, center.lat], [center.lng, center.lat]))
+        map.current.fitBounds(bounds, { padding: 80, maxZoom: 16 })
+        setStatus(`Found ${results.length} result${results.length === 1 ? '' : 's'} nearby`)
+      } else {
+        map.current.flyTo({ center: [center.lng, center.lat], zoom: 14 })
+        setStatus(`No results found within ${radiusMeters}m`)
+      }
+    } catch (err) {
+      setStatus('Nearby search failed: ' + (err.response?.data?.detail || err.message))
+    }
+  }
+
+  const handleNearbyHover = (r, active) => {
+    const entry = nearbyMarkersRef.current.find(m => m.id === r.id)
+    if (entry) {
+      entry.innerEl.style.transform = active ? 'scale(1.35)' : 'scale(1)'
+      entry.innerEl.style.zIndex = active ? '10' : '0'
+    }
+    if (active) map.current.panTo([r.lng, r.lat])
+  }
+
+
   
   return (
-    <div style={styles.container}>
+    <div className={cls.container}>
 
       {/* Sidebar */}
-      <div style={styles.sidebar}>
-        <div style={styles.sidebarTop}>
+      <div className={cls.sidebar}>
+        <div className={cls.sidebarTop}>
           <SidebarBtn icon={<Search size={20} strokeWidth={1.5} />} active={activePanel === 'search'} tooltip="Search" onClick={() => togglePanel('search')} />
-          <div style={styles.sidebarDivider} />
+          <div className={cls.sidebarDivider} />
           <SidebarBtn icon={<CircleDashed size={20} strokeWidth={1.5} />} active={activePanel === 'buffer'} tooltip="Buffer" onClick={() => togglePanel('buffer')} />
           <SidebarBtn icon={<LandPlot  size={20} strokeWidth={1.5} />} active={activePanel === 'viewshed'} tooltip="Viewshed" onClick={() => togglePanel('viewshed')} />
           <SidebarBtn icon={<Route size={20} strokeWidth={1.5} />} active={activePanel === 'route'} tooltip="Shortest Path" onClick={() => togglePanel('route')} />
           <SidebarBtn icon={<Layers size={20} strokeWidth={1.5} />} active={activePanel === 'shapes'} tooltip="Shapes" onClick={() => togglePanel('shapes')} />
           <SidebarBtn icon={<Timer size={20} strokeWidth={1.5} />} active={activePanel === 'isochrone'} tooltip="Drive Time" onClick={() => togglePanel('isochrone')} />
           <SidebarBtn icon={<Pentagon size={20} strokeWidth={1.5} />} active={isDrawing} tooltip="Draw Polygon" onClick={toggleDrawingPolygon} />
-        </div>  
+          <SidebarBtn icon={<MapPinned size={20} strokeWidth={1.5} />} active={activePanel === 'nearby'} tooltip="Nearby Places" onClick={() => togglePanel('nearby')} />
+        </div>
+        <div className={cls.sidebarBottom}>
+          <SidebarBtn
+            icon={theme === 'dark' ? <Sun size={20} strokeWidth={1.5} /> : <Moon size={20} strokeWidth={1.5} />}
+            tooltip={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+            onClick={() => setTheme(prev => (prev === 'dark' ? 'light' : 'dark'))}
+          />
+        </div>
       </div>
 
       {/* Search Panel */}
@@ -883,7 +936,7 @@ const clearBuffer = ({ silent = false } = {}) => {
           Drag to adjust buffer diameter!
         </p>
         <PanelBtn onClick={commitBuffer}>Add to Shapes</PanelBtn>
-        <PanelBtn onClick={clearBuffer} color='#999'>Clear Buffer</PanelBtn>
+        <PanelBtn onClick={clearBuffer} variant="secondary">Clear Buffer</PanelBtn>
       </Panel>
 
       {/*Viewshed panel*/}
@@ -910,7 +963,7 @@ const clearBuffer = ({ silent = false } = {}) => {
         <p style={{ fontSize: '12px', color: '#999', marginBottom: '12px'}}>
           Drag to adjust radius and height
         </p>
-        <PanelBtn onClick={clearViewshed} color="#999">Clear Viewshed</PanelBtn>
+        <PanelBtn onClick={clearViewshed} variant="secondary">Clear Viewshed</PanelBtn>
       </Panel>
 
       {/* Route Panel */}
@@ -935,7 +988,7 @@ const clearBuffer = ({ silent = false } = {}) => {
           onChange={e => setRouteEnd(e.target.value)}
         />
         <div style={{ height: '1px', background: '#eee', margin: '12px 0' }} />
-        <PanelBtn onClick={() => handleRoute()} color="#8B4513">Find Route</PanelBtn>
+        <PanelBtn onClick={() => handleRoute()}>Find Route</PanelBtn>
       </Panel>
 
       {/* Shapes Panel */}
@@ -972,8 +1025,8 @@ const clearBuffer = ({ silent = false } = {}) => {
         ))}
         {selectedShapeIds.length >= 2 && (
           <>
-            <PanelBtn onClick={() => runOverlay('intersect')} color="#8e44ad">Intersect</PanelBtn>
-            <PanelBtn onClick={() => runOverlay('union')} color="#8e44ad">Union</PanelBtn>
+            <PanelBtn onClick={() => runOverlay('intersect')}>Intersect</PanelBtn>
+            <PanelBtn onClick={() => runOverlay('union')}>Union</PanelBtn>
           </>
         )}
       </Panel>
@@ -993,11 +1046,93 @@ const clearBuffer = ({ silent = false } = {}) => {
           Pin a location, then calculate approximate drive-time coverage. Green = fast, red = slow.
         </p>
         <PanelBtn onClick={() => runIsochrone()}>Calculate</PanelBtn>
-        <PanelBtn onClick={clearIsochrone} color="#999">Clear</PanelBtn>
+        <PanelBtn onClick={clearIsochrone} variant="secondary">Clear</PanelBtn>
       </Panel>
 
+      {/* Nearby Places Panel */}
+      <Panel title="Nearby Places" open={activePanel === 'nearby'} onClose={() => setActivePanel(null)}>
+        <StatusLine status={status} />
+
+        <div style={{ display: 'flex', gap: '6px', marginBottom: '12px' }}>
+          {[['hospital', 'Hospital'], ['police_station', 'Police'], ['fire_department', 'Fire Department']].map(([val, label]) => (
+            <button key={val} onClick={() => setNearbyCategory(val)} style={{
+              flex: 1, padding: '8px', fontSize: '12px', cursor: 'pointer', borderRadius: '6px',
+              border: nearbyCategory === val ? '2px solid #2d4a6e' : '1px solid #ddd',
+              background: nearbyCategory === val ? '#eef4fa' : 'white',
+              // Explicit dark text: the backgrounds above are hardcoded light, so
+              // inheriting the panel's card-foreground makes these white-on-white in dark mode.
+              color: 'rgb(37 34 34)',
+            }}>{label}</button>
+          ))}
+        </div>
+
+        <SliderField label="Radius" value={nearbyRadius} min={500} max={10000} step={500} unit="m"
+          onChange={e => setNearbyRadius(Number(e.target.value))} />
+
+        <PanelBtn onClick={() => {
+          if (!currentLocation.current) { setStatus('Pin a location first!'); return }
+          const { lat, lng } = currentLocation.current
+          runNearbyFeatures(nearbyCategory, `${lat},${lng}`, nearbyRadius)
+        }}>Search Near Pinned Location</PanelBtn>
+
+        <div style={{ height: '1px', background: '#eee', margin: '14px 0' }} />
+
+        {nearbyResults.length === 0 && (
+          <p className="text-[13px] text-muted-foreground">No results yet — pin a location and search, or ask the assistant (e.g. "hospitals near me").</p>
+        )}
+        {nearbyResults.map(r => (
+          <div key={r.id}
+            onMouseEnter={() => handleNearbyHover(r, true)}
+            onMouseLeave={() => handleNearbyHover(r, false)}
+            onClick={() => map.current.flyTo({ center: [r.lng, r.lat], zoom: 17 })}
+            className="p-2.5 mb-2 rounded-md ring-1 ring-ring/40 cursor-pointer transition-colors hover:bg-accent"
+          >
+            <p className="text-sm font-semibold mb-0.5">{r.name}</p>
+            {r.address && <p className="text-xs text-muted-foreground mb-1.5">{r.address}</p>}
+            <p className="text-xs font-medium text-foreground/70 mb-2">
+              {(r.driving_distance_m / 1000).toFixed(2)} km — {Math.round(r.driving_duration_s / 60)} min drive
+            </p>
+            <button onClick={(e) => {
+              e.stopPropagation()
+              if(nearbySearchCenter){
+                setRouteStart(`${nearbySearchCenter.lat}, ${nearbySearchCenter.lng}`)
+              }
+              setRouteEnd(`${r.lat},${r.lng}`)
+              togglePanel('route')
+            }} className="px-2.5 py-1.5 rounded-md text-xs font-medium border-none cursor-pointer bg-primary text-primary-foreground hover:opacity-90">
+              Navigate
+            </button>
+          </div>
+        ))}
+        {nearbyResults.length > 0 && <PanelBtn onClick={clearNearbyFeatures} variant="secondary">Clear Results</PanelBtn>}
+      </Panel>
+
+
       {/* Map */}
-      <div ref={mapContainer} style={styles.map} />
+      <div ref={mapContainer} className={cls.map} />
+
+      <button
+        onClick = {handleUseMyLocation}
+        title = "My Location"
+        style={{
+          position: 'fixed',
+          bottom: '90px',
+          right: '10px',
+          width: '29px',
+          height: '29px',
+          background: 'white',
+          border: 'none',
+          borderRadius: '4px',
+          boxShadow: '0 0 0 2px rgba(0,0,0,0.1)',
+          cursor: 'pointer',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 10,
+        }}
+      >
+           <MapPin size={18} strokeWidth={1.75} color="#333" />
+      </button>
 
     
 
