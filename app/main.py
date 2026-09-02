@@ -1,3 +1,5 @@
+import logging
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.routers import features
@@ -8,6 +10,9 @@ from app.routers import viewshed
 from app.routers import routing
 from app.routers import assistant
 
+# Without this, uvicorn leaves the root logger unconfigured and anything the app
+# logs below WARNING is silently dropped.
+logging.basicConfig(level=logging.INFO, format="%(levelname)s:     %(name)s - %(message)s")
 
 app = FastAPI(title="OpenGIS API")
 app.include_router(features.router)

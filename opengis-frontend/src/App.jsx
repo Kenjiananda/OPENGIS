@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import {createRoot} from 'react-dom/client'
-import { Search, CircleDashed, LandPlot, Route, Info, Layers, Timer, Pentagon, MapPin, AtSignIcon, Hospital, FireExtinguisher, MapPinned, Sun, Moon } from 'lucide-react'
+import { Search, CircleDashed, LandPlot, Route, Info, Layers, Timer, Pentagon, MapPin, AtSignIcon, Hospital, FireExtinguisher, MapPinned, Sun, Moon, Users } from 'lucide-react'
 import maplibregl, { Popup } from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
 import axios from 'axios'
@@ -117,10 +117,11 @@ const panelBtnVariants = {
   destructive: 'bg-destructive text-destructive-foreground hover:opacity-90',
 }
 
-function PanelBtn({ onClick, variant = 'primary', children }) {
+function PanelBtn({ onClick, variant = 'primary', tooltip, children }) {
   return (
     <button
       onClick={onClick}
+      title={tooltip}
       className={`w-full p-2.5 mb-2 rounded-md text-sm font-medium cursor-pointer border-none transition-opacity ${panelBtnVariants[variant]}`}
     >
       {children}
@@ -156,6 +157,21 @@ function useThrottle(callback, delay){
       }, remaining);
     }
   }, [callback, delay])
+}
+
+// The assistant is told to leave `location` empty for "near me" style requests,
+// but it often echoes the user's own wording instead ("here", "my location").
+// Treat those as blank so they fall through to the live-GPS branch.
+// Axios's own message for a failed request is just "Request failed with status
+// code 404", which hides the reason. The backend always sends a human-readable
+// explanation in `detail` (e.g. "not found in Taipei or New Taipei"), so prefer it.
+function apiError(err) {
+  return err.response?.data?.detail || err.message
+}
+
+function isSelfReferentialLocation(text) {
+  const normalized = (text || '').trim().toLowerCase()
+  return normalized === '' || ['here', 'me', 'near me', 'my location', 'current location', 'my current location'].includes(normalized)
 }
 
 function getNextDefaultName(shapesList, prefix = 'Shape') {
@@ -208,6 +224,45 @@ function createIconMarkerElement(IconComponent, color, size = 30) {
     return { element: outer, innerEl: inner, root: null }
   }
 
+  function setMarkerHighlight(innerEl, active) {
+    innerEl.style.transform = active ? 'scale(1.35)' : 'scale(1)'
+    innerEl.style.zIndex = active ? '10' : '0'
+  }
+
+  function escapeHtml(str) {
+    const div = document.createElement('div')
+    div.textContent = str ?? ''
+    return div.innerHTML
+  }
+
+  // Builds the raw HTML for a marker's hover popup — used via maplibregl.Popup#setHTML,
+  // not JSX, so styling is inline rather than Tailwind classes.
+  function buildFeaturePopupHtml(name, address, metaLines) {
+    return `
+      <div style="font-family: Segoe UI, Arial, sans-serif; min-width: 170px; max-width: 240px;">
+        <p style="margin:0 0 2px; font-size:13px; font-weight:600; color:#1a1a1a;">${escapeHtml(name)}</p>
+        ${address ? `<p style="margin:0 0 6px; font-size:11px; color:#666;">${escapeHtml(address)}</p>` : ''}
+        ${(metaLines || []).map(line => `<p style="margin:0; font-size:11px; font-weight:500; color:#2d4a6e;">${escapeHtml(line)}</p>`).join('')}
+      </div>
+    `
+  }
+
+  // Wires hover-to-preview behavior on a marker's DOM element: scales the icon
+  // (matching the existing list-hover effect) and shows a popup at its coordinates,
+  // like Google Maps' hover card. No panTo here (unlike list-item hover) — the
+  // marker is already on screen, and panning under the cursor would just cause
+  // mouseleave/mouseenter to fight each other.
+  function attachMarkerHoverPopup(mapInstance, element, innerEl, lngLat, popup) {
+    element.addEventListener('mouseenter', () => {
+      setMarkerHighlight(innerEl, true)
+      popup.setLngLat(lngLat).addTo(mapInstance)
+    })
+    element.addEventListener('mouseleave', () => {
+      setMarkerHighlight(innerEl, false)
+      popup.remove()
+    })
+  }
+
 
 function App() {
   const mapContainer = useRef(null)
@@ -219,7 +274,7 @@ function App() {
   const [assistantInput, setAssistantInput] = useState('')
   const [routeStart, setRouteStart] = useState('')
   const [routeEnd, setRouteEnd] = useState('')
-  const [isochroneRadius, setIsochroneRadius] = useState(3)
+  const [isochroneMinutes, setIsochroneMinutes] = useState(15)
   const [bufferDistance, setBufferDistance] = useState(500)
   const [viewshedRadius, setViewshedRadius] = useState(1000)
   const [viewshedHeight, setViewshedHeight] = useState(10)
@@ -228,6 +283,14 @@ function App() {
   const [nearbyRadius, setNearbyRadius] = useState(5000)
   const [nearbySearchCenter, setNearbySearchCenter] = useState(null)
   const nearbyMarkersRef = useRef([])
+  const [bestDestCategory, setBestDestCategory] = useState('hospital')
+  const [bestDestRadius, setBestDestRadius] = useState(5000)
+  const [originAInput, setOriginAInput] = useState('')
+  const [originBInput, setOriginBInput] = useState('')
+  const [bestDestOrigins, setBestDestOrigins] = useState([])
+  const [bestDestResults, setBestDestResults] = useState([])
+  const originMarkersRef = useRef([])
+  const bestDestMarkersRef = useRef([])
   const currentMarker = useRef(null)
   const currentLocation = useRef(null)
   const [shapes, setShapes] = useState([])
@@ -338,7 +401,7 @@ function App() {
     if (drawRef.current) drawRef.current.setMode('select')
     setIsDrawing(false)
     isDrawingRef.current = false
-    if (['buffer', 'viewshed', 'route', 'isochrone', 'nearby'].includes(name)) {
+    if (['buffer', 'viewshed', 'route', 'isochrone', 'nearby', 'best-destination'].includes(name)) {
       clearOtherPreviews(name)
     }
     setActivePanel(prev => {
@@ -372,7 +435,7 @@ function App() {
       setStatus('Searching...')
       const query = overrideAddress ?? address
       const { displayAddress } = await pinLocation(query)
-      setStatus(`Location Found — ${displayAddress}`)
+      setStatus(` ${displayAddress}`)
     } catch (err) { setStatus('Location not found') }
   }
 
@@ -380,54 +443,68 @@ function App() {
 
   const dispatch = {
     
-    geocode: (params) => handleGeocode(params.location),
+    geocode: (params) => {
+      if(!params.location || params.location.trim() === ''){
+        handleUseMyLocation()
+      }else{
+        handleGeocode(params.location)
+      }
+    },
     no_action: (params) => setStatus(params.reason),
     create_buffer: async (params) => {
       try {
-        await pinLocation(params.location)
+        await resolveAssistantLocation(params.location)
         setBufferDistance(params.distance_meters)
         await runBuffer(params.distance_meters)
         commitBuffer()
       } catch (err) {
-        setStatus('Could not create buffer')
+        setStatus('Could not create buffer: ' + apiError(err))
       }
     },
+    create_buffers: (params) => createMultipleBuffers(params.locations, params.distances_meters, params.operation),
     viewshed: async (params) => {
       try {
-        await pinLocation(params.location)
+        await resolveAssistantLocation(params.location)
         setViewshedRadius(params.radius_meters)
         setViewshedHeight(params.observer_height)
         await runViewshed(params.radius_meters, params.observer_height)
       } catch (err) {
-        setStatus('Could not calculate viewshed')
+        setStatus('Could not calculate viewshed: ' + apiError(err))
       }
     },
     isochrone: async (params) => {
       try {
-        await pinLocation(params.location)
-        setIsochroneRadius(params.radius_km)
-        await runIsochrone(params.radius_km)
+        await resolveAssistantLocation(params.location)
+        // The assistant still speaks in km; treat it as a rough drive-time budget
+        // (Taipei traffic averages well under 30km/h, so ~3 min per km is realistic).
+        const minutes = params.max_minutes ?? Math.min(60, Math.max(5, Math.round((params.radius_km ?? 5) * 3)))
+        setIsochroneMinutes(minutes)
+        await runIsochrone(minutes)
       } catch (err) {
-        setStatus('Could not calculate isochrone')
+        setStatus('Could not calculate isochrone: ' + apiError(err))
       }
     },
     find_route: (params) => handleRoute(params.start_location, params.end_location),
     find_nearby_features: (params) => runNearbyFeatures(params.category, params.location, params.radius_meters),
+    find_best_destination: (params) => runBestDestination(params.origin_a, params.origin_b, params.category, params.radius_meters, params.mode),
   }
 
 
   const handleAssistantQuery = async(text) => {
     try{
+      setStatus('Thinking...')
       const res = await axios.post(`${API}/assistant/query`, {message: text})
       const {action, params} = res.data
       const handler = dispatch[action]
       if (handler){
         handler(params)
       }else{
-        console.log('Unknown action', action)
-      }     
+        setStatus(`Assistant asked for an action this app doesn't support: ${action}`)
+      }
     }catch (err){
-      console.log('Assistant query failed', err)
+      // The backend puts the real reason (quota exceeded, no tool call, etc.) in
+      // `detail` — show it instead of failing silently to the console.
+      setStatus(apiError(err))
     }
   }
 
@@ -452,6 +529,28 @@ function App() {
     return messages[err.code] || err.message || 'Failed to get your location'
   }
 
+  // Shared by every assistant action that takes a `location` param: resolves a
+  // named place via pinLocation, or falls back to live GPS (dropping the same
+  // red marker) when the assistant left it blank or echoed a self-referential
+  // phrase like "here" — see isSelfReferentialLocation.
+  const resolveAssistantLocation = async (location) => {
+    if (location && !isSelfReferentialLocation(location)) {
+      return await pinLocation(location)
+    }
+    let center
+    try {
+      center = await getLiveLocation()
+    } catch (err) {
+      throw new Error(geoErrorMessage(err))
+    }
+    if (currentMarker.current) currentMarker.current.remove()
+    currentMarker.current = new maplibregl.Marker({ color: '#e74c3c' })
+      .setLngLat([center.lng, center.lat])
+      .addTo(map.current)
+    currentLocation.current = center
+    return center
+  }
+
   const handleUseMyLocation = async () => {
     setStatus('Getting your location...')
     try {
@@ -471,7 +570,7 @@ function App() {
         .setPopup(new maplibregl.Popup().setText(displayAddress))
         .addTo(map.current)
       currentLocation.current = { lat, lng }
-      setStatus(`Location Found — ${displayAddress}`)
+      setStatus(`${displayAddress}`)
 
       if (map.current.getSource('buffer')) {
         throttledBuffer(bufferDistance)
@@ -490,6 +589,7 @@ function App() {
     map.current.addSource(layerId, { type: 'geojson', data: { type: 'Feature', geometry } })
     map.current.addLayer({ id: layerId, type: 'fill', source: layerId, paint: { 'fill-color': color, 'fill-opacity': 0.35 } })
     setShapes(prev => [...prev, { id, name: name || getNextDefaultName(prev, typeLabel), geometry, origin }])
+    return id
   }
 
   const removeShape = (id) => {
@@ -595,8 +695,9 @@ const commitBuffer = () => {
     setStatus('No active buffer to add')
     return
   }
-  addShape(currentBufferGeometry.current, '#3498db',  null, undefined, 'Buffer')
+  const id = addShape(currentBufferGeometry.current, '#3498db',  null, undefined, 'Buffer')
   setStatus('Buffer added to shapes')
+  return id
 }
 
 const throttledBuffer = useThrottle(runBuffer, 150)
@@ -634,7 +735,7 @@ const clearBuffer = ({ silent = false } = {}) => {
       }
       setStatus(`Viewshed active — ${radius}m radius, ${height}m height`)
     }catch(err){
-      setStatus('viewshed failed: ' +  err.message)
+      setStatus('viewshed failed: ' + apiError(err))
     }
   }, [])
 
@@ -643,15 +744,17 @@ const clearBuffer = ({ silent = false } = {}) => {
     clearOtherPreviews('isochrone')
     try {
       setStatus('Calculating isochrone...')
-      const radius = overrideRadius ?? isochroneRadius
+      const minutes = overrideRadius ?? isochroneMinutes
       const { lat, lng } = currentLocation.current
+      // Mapbox's Isochrone API caps at 4 contours and 60 minutes.
       const res = await axios.get(`${API}/routing/isochrone`, {
-        params: { lat, lng, radius_km: radius, grid_size: 8 }
+        params: { lat, lng, max_minutes: minutes, bands: 4 }
       })
-      const features = res.data.points.map(p => ({
-        type: 'Feature',
-        geometry: { type: 'Point', coordinates: [p.lng, p.lat] },
-        properties: { duration: p.duration_seconds }
+      // Bands come back ordered fastest -> slowest; tag each with its position
+      // so the color ramp below doesn't need to know actual duration values.
+      const features = res.data.features.map((f, i) => ({
+        ...f,
+        properties: { ...f.properties, band_index: i }
       }))
       const geojson = { type: 'FeatureCollection', features }
 
@@ -660,23 +763,21 @@ const clearBuffer = ({ silent = false } = {}) => {
       } else {
         map.current.addSource('isochrone', { type: 'geojson', data: geojson })
         map.current.addLayer({
-          id: 'isochrone-layer', type: 'heatmap', source: 'isochrone',
+          id: 'isochrone-layer', type: 'fill', source: 'isochrone',
           paint: {
-            'heatmap-weight': ['interpolate', ['linear'], ['get', 'duration'], 0, 1, 900, 0],
-            'heatmap-radius': 40,
-            'heatmap-opacity': 0.7,
-            'heatmap-color': [
-              'interpolate', ['linear'], ['heatmap-density'],
-              0, 'rgba(0,0,0,0)',
-              0.3, '#2ecc71',
-              0.6, '#f1c40f',
-              1, '#e74c3c'
-            ]
+            'fill-color': [
+              'interpolate', ['linear'], ['get', 'band_index'],
+              0, '#2ecc71',
+              1.5, '#f1c40f',
+              3, '#e74c3c'
+            ],
+            'fill-opacity': 0.35,
+            'fill-outline-color': '#ffffff'
           }
         })
       }
       setStatus('Isochrone rendered')
-    } catch (err) { setStatus('Isochrone failed: ' + err.message) }
+    } catch (err) { setStatus('Isochrone failed: ' + apiError(err)) }
   }
 
   const clearIsochrone = ({ silent = false } = {}) => {
@@ -718,9 +819,10 @@ const clearBuffer = ({ silent = false } = {}) => {
   }
 
   const clearNearbyFeatures = ({ silent = false } = {}) => {
-    nearbyMarkersRef.current.forEach(({ marker, root }) => {
+    nearbyMarkersRef.current.forEach(({ marker, root, popup }) => {
       marker.remove()
       if (root) root.unmount()
+      if (popup) popup.remove()
     })
     nearbyMarkersRef.current = []
     setNearbyResults([])
@@ -728,12 +830,27 @@ const clearBuffer = ({ silent = false } = {}) => {
   }
 
 
+  const clearBestDestination = ({ silent = false } = {}) => {
+    originMarkersRef.current.forEach(m => m.remove())
+    originMarkersRef.current = []
+    bestDestMarkersRef.current.forEach(({ marker, root, popup }) => {
+      marker.remove()
+      if (root) root.unmount()
+      if (popup) popup.remove()
+    })
+    bestDestMarkersRef.current = []
+    setBestDestResults([])
+    setBestDestOrigins([])
+    if (!silent) setStatus('Results cleared')
+  }
+
   const clearOtherPreviews = (keep) => {
     if(keep !== 'buffer') clearBuffer({silent: true})
     if(keep !== 'viewshed') clearViewshed({silent: true})
     if(keep !== 'route') clearRoute({silent: true})
     if(keep !== 'isochrone') clearIsochrone({silent: true})
       if(keep !== 'nearby') clearNearbyFeatures({silent: true})
+      if(keep !== 'best-destination') clearBestDestination({silent: true})
   }
 
   const toggleShapeSelect = (id) => {
@@ -744,18 +861,60 @@ const clearBuffer = ({ silent = false } = {}) => {
     })
   }
 
-  const runOverlay = async (operation) => {
-    if (selectedShapeIds.length < 2) return
+  // overrideIds/overrideGeometries let a caller that just created shapes in this
+  // same tick (e.g. createMultipleBuffers) pass them directly, since `shapes`
+  // state won't reflect a setShapes() call from earlier in the same function yet.
+  const runOverlay = async (operation, overrideIds, overrideGeometries) => {
+    const ids = overrideIds ?? selectedShapeIds
+    if (ids.length < 2) return
     try {
       setStatus(`Running ${operation}...`)
-      const geometries = shapes.filter(s => selectedShapeIds.includes(s.id)).map(s => s.geometry)
+      const geometries = overrideGeometries ?? shapes.filter(s => ids.includes(s.id)).map(s => s.geometry)
       const res = await axios.post(`${API}/spatial/${operation}`, { geometries })
-      selectedShapeIds.forEach(id => removeShape(id))
+      ids.forEach(id => removeShape(id))
       addShape(res.data.geometry, '#e74c3c', null, undefined, operation.charAt(0).toUpperCase() + operation.slice(1))
       setSelectedShapeIds([])
       setStatus(`${operation} complete`)
     } catch (err) {
-      setStatus(`${operation} failed: ` + (err.response?.data?.detail || err.message))
+      setStatus(`${operation} failed: ` + apiError(err))
+    }
+  }
+
+  const createMultipleBuffers = async (locations, distancesMeters, operation) => {
+    if (!locations || !distancesMeters || locations.length !== distancesMeters.length) {
+      setStatus('Could not create buffers: locations and distances must line up one-to-one')
+      return
+    }
+    const op = (operation || 'none').toLowerCase()
+    if (op !== 'none' && op !== 'union' && op !== 'intersect') {
+      setStatus(`Could not create buffers: "${operation}" isn't a real operation — expected union, intersect, or none`)
+      return
+    }
+
+    try {
+      const ids = []
+      const geometries = []
+      for (let i = 0; i < locations.length; i++) {
+        setStatus(`Creating buffer ${i + 1} of ${locations.length}...`)
+        await resolveAssistantLocation(locations[i])
+        setBufferDistance(distancesMeters[i])
+        await runBuffer(distancesMeters[i])
+        const id = commitBuffer()
+        ids.push(id)
+        geometries.push(currentBufferGeometry.current)
+      }
+
+      if (op === 'none') {
+        setStatus(`Created ${ids.length} buffers`)
+        return
+      }
+      if (ids.length < 2) {
+        setStatus(`Need at least 2 buffers to ${op}, only got ${ids.length}`)
+        return
+      }
+      await runOverlay(op, ids, geometries)
+    } catch (err) {
+      setStatus('Could not create buffers: ' + apiError(err))
     }
   }
 
@@ -810,12 +969,12 @@ const clearBuffer = ({ silent = false } = {}) => {
       const hour = Math.floor(mins / 60)
       const remainingMins = mins % 60
       if(hour == 0){
-        setStatus(`${km} km —— ${remainingMins}min `)
+        setStatus(`${km} km (${remainingMins}min) `)
       }else{
-        setStatus(`${km} km —— ${hour}h ${remainingMins}min `)   
+        setStatus(`${km} km (${hour}h ${remainingMins}min) `)   
       }
       
-    } catch (err) { setStatus('Route failed: ' + err.message) }
+    } catch (err) { setStatus('Route failed: ' + apiError(err)) }
   }
 
   // radiusMeters defaults here because the assistant may omit it — the tool schema
@@ -826,18 +985,7 @@ const clearBuffer = ({ silent = false } = {}) => {
       clearOtherPreviews('nearby')
       clearNearbyFeatures({ silent: true })
 
-      let center
-      if (location && location.trim() !== '') {
-        const { lat, lng } = await pinLocation(location)
-        center = { lat, lng }
-      } else {
-        try {
-          center = await getLiveLocation()
-        } catch (err) {
-          setStatus(geoErrorMessage(err))
-          return
-        }
-      }
+      const center = await resolveAssistantLocation(location)
 
       setNearbySearchCenter(center)
 
@@ -851,7 +999,12 @@ const clearBuffer = ({ silent = false } = {}) => {
           ? createImageMarkerElement('/images/police_station_icon.png')
           : createIconMarkerElement(category === 'hospital' ? Hospital : FireExtinguisher, category === 'hospital' ? '#c73d3d' : '#ff0000')
         const marker = new maplibregl.Marker({ element }).setLngLat([r.lng, r.lat]).addTo(map.current)
-        nearbyMarkersRef.current.push({ id: r.id, marker, innerEl, root })
+        const popup = new maplibregl.Popup({ offset: 20, closeButton: false, closeOnClick: false })
+          .setHTML(buildFeaturePopupHtml(r.name, r.address, [
+            `${(r.driving_distance_m / 1000).toFixed(2)} km — ${Math.round(r.driving_duration_s / 60)} min drive`,
+          ]))
+        attachMarkerHoverPopup(map.current, element, innerEl, [r.lng, r.lat], popup)
+        nearbyMarkersRef.current.push({ id: r.id, marker, innerEl, root, popup })
       })
 
       setNearbyResults(results)
@@ -868,16 +1021,120 @@ const clearBuffer = ({ silent = false } = {}) => {
         setStatus(`No results found within ${radiusMeters}m`)
       }
     } catch (err) {
-      setStatus('Nearby search failed: ' + (err.response?.data?.detail || err.message))
+      setStatus('Nearby search failed: ' + apiError(err))
     }
   }
 
   const handleNearbyHover = (r, active) => {
     const entry = nearbyMarkersRef.current.find(m => m.id === r.id)
-    if (entry) {
-      entry.innerEl.style.transform = active ? 'scale(1.35)' : 'scale(1)'
-      entry.innerEl.style.zIndex = active ? '10' : '0'
+    if (entry) setMarkerHighlight(entry.innerEl, active)
+    if (active) map.current.panTo([r.lng, r.lat])
+  }
+
+  // Unlike resolveAssistantLocation, this can't touch the singular
+  // currentMarker/currentLocation refs — two independent origins need two
+  // independent pins that stick around at once.
+  const resolveOriginLocation = async (text) => {
+    const trimmed = (text || '').trim()
+    if (isSelfReferentialLocation(trimmed)) {
+      try {
+        return await getLiveLocation()
+      } catch (err) {
+        throw new Error(geoErrorMessage(err))
+      }
     }
+    const isCoordinate = /^-?\d+\.?\d*\s*,\s*-?\d+\.?\d*$/.test(trimmed)
+    if (isCoordinate) {
+      const [lat, lng] = trimmed.split(',').map(s => parseFloat(s.trim()))
+      return { lat, lng }
+    }
+    const res = await axios.get(`${API}/geocode/forward`, { params: { address: trimmed } })
+    return { lat: res.data.latitude, lng: res.data.longitude }
+  }
+
+  // Overrides let the assistant dispatch pass values straight through instead of
+  // relying on originAInput/bestDestCategory state, which wouldn't be updated yet
+  // in the same tick right after a setOriginAInput() call — same hazard runOverlay
+  // and createMultipleBuffers hit with `shapes` state earlier.
+  const runBestDestination = async (overrideOriginA, overrideOriginB, overrideCategory, overrideRadius, overrideMode) => {
+    try {
+      setStatus('Finding best match...')
+      clearOtherPreviews('best-destination')
+      clearBestDestination({ silent: true })
+
+      const originAText = overrideOriginA ?? originAInput
+      const originBText = overrideOriginB ?? originBInput
+      const category = overrideCategory ?? bestDestCategory
+      const radius = overrideRadius ?? bestDestRadius
+      const mode = overrideMode ?? 'priority'
+
+      const [a, b] = await Promise.all([
+        resolveOriginLocation(originAText),
+        resolveOriginLocation(originBText),
+      ])
+      const origins = [
+        { ...a, label: 'Origin A' },
+        { ...b, label: 'Origin B' },
+      ]
+
+      origins.forEach((o, i) => {
+        const marker = new maplibregl.Marker({ color: i === 0 ? '#4a90d9' : '#9b59b6' })
+          .setLngLat([o.lng, o.lat])
+          .setPopup(new maplibregl.Popup().setText(o.label))
+          .addTo(map.current)
+        originMarkersRef.current.push(marker)
+      })
+      setBestDestOrigins(origins)
+      setOriginAInput(isSelfReferentialLocation(originAText) ? '' : originAText)
+      setOriginBInput(isSelfReferentialLocation(originBText) ? '' : originBText)
+      setBestDestCategory(category)
+      setBestDestRadius(radius)
+
+      const res = await axios.post(`${API}/routing/best-destination`, {
+        origins: origins.map(o => ({ lat: o.lat, lng: o.lng, label: o.label })),
+        category,
+        radius_m: radius,
+        mode,
+      })
+      const results = res.data.results
+
+      results.forEach((r, i) => {
+        const size = i === 0 ? 38 : 30
+        const { element, innerEl, root } = category === 'police_station'
+          ? createImageMarkerElement('/images/police_station_icon.png', size)
+          : createIconMarkerElement(category === 'hospital' ? Hospital : FireExtinguisher, category === 'hospital' ? '#c73d3d' : '#ff0000', size)
+        const marker = new maplibregl.Marker({ element }).setLngLat([r.lng, r.lat]).addTo(map.current)
+        const metaLines = [
+          i === 0 ? 'Best match' : null,
+          ...r.durations_s.map((d, j) => `${origins[j]?.label || `Origin ${j + 1}`}: ${Math.round(d / 60)} min drive`),
+        ].filter(Boolean)
+        const popup = new maplibregl.Popup({ offset: size / 2 + 6, closeButton: false, closeOnClick: false })
+          .setHTML(buildFeaturePopupHtml(r.name, r.address, metaLines))
+        attachMarkerHoverPopup(map.current, element, innerEl, [r.lng, r.lat], popup)
+        bestDestMarkersRef.current.push({ id: r.id, marker, innerEl, root, popup })
+      })
+
+      setBestDestResults(results)
+      setActivePanel('best-destination')
+
+      if (results.length > 0) {
+        const bounds = origins.reduce((b, o) => b.extend([o.lng, o.lat]), new maplibregl.LngLatBounds([origins[0].lng, origins[0].lat], [origins[0].lng, origins[0].lat]))
+        results.forEach(r => bounds.extend([r.lng, r.lat]))
+        map.current.fitBounds(bounds, { padding: 80, maxZoom: 15 })
+        setStatus(`Best match: ${results[0].name}`)
+      } else {
+        const bounds = origins.reduce((b, o) => b.extend([o.lng, o.lat]), new maplibregl.LngLatBounds([origins[0].lng, origins[0].lat], [origins[0].lng, origins[0].lat]))
+        map.current.fitBounds(bounds, { padding: 120, maxZoom: 14 })
+        setStatus(`No ${category.replace('_', ' ')} found within ${radius}m of both`)
+      }
+    } catch (err) {
+      setStatus('Could not find best match: ' + apiError(err))
+    }
+  }
+
+  const handleBestDestHover = (r, active) => {
+    const entry = bestDestMarkersRef.current.find(m => m.id === r.id)
+    if (entry) setMarkerHighlight(entry.innerEl, active)
     if (active) map.current.panTo([r.lng, r.lat])
   }
 
@@ -892,12 +1149,13 @@ const clearBuffer = ({ silent = false } = {}) => {
           <SidebarBtn icon={<Search size={20} strokeWidth={1.5} />} active={activePanel === 'search'} tooltip="Search" onClick={() => togglePanel('search')} />
           <div className={cls.sidebarDivider} />
           <SidebarBtn icon={<CircleDashed size={20} strokeWidth={1.5} />} active={activePanel === 'buffer'} tooltip="Buffer" onClick={() => togglePanel('buffer')} />
+          <SidebarBtn icon={<Pentagon size={20} strokeWidth={1.5} />} active={isDrawing} tooltip="Draw Polygon" onClick={toggleDrawingPolygon} />
           <SidebarBtn icon={<LandPlot  size={20} strokeWidth={1.5} />} active={activePanel === 'viewshed'} tooltip="Viewshed" onClick={() => togglePanel('viewshed')} />
           <SidebarBtn icon={<Route size={20} strokeWidth={1.5} />} active={activePanel === 'route'} tooltip="Shortest Path" onClick={() => togglePanel('route')} />
           <SidebarBtn icon={<Layers size={20} strokeWidth={1.5} />} active={activePanel === 'shapes'} tooltip="Shapes" onClick={() => togglePanel('shapes')} />
           <SidebarBtn icon={<Timer size={20} strokeWidth={1.5} />} active={activePanel === 'isochrone'} tooltip="Drive Time" onClick={() => togglePanel('isochrone')} />
-          <SidebarBtn icon={<Pentagon size={20} strokeWidth={1.5} />} active={isDrawing} tooltip="Draw Polygon" onClick={toggleDrawingPolygon} />
           <SidebarBtn icon={<MapPinned size={20} strokeWidth={1.5} />} active={activePanel === 'nearby'} tooltip="Nearby Places" onClick={() => togglePanel('nearby')} />
+          <SidebarBtn icon={<Users size={20} strokeWidth={1.5} />} active={activePanel === 'best-destination'} tooltip="Best For Everyone" onClick={() => togglePanel('best-destination')} />
         </div>
         <div className={cls.sidebarBottom}>
           <SidebarBtn
@@ -997,7 +1255,7 @@ const clearBuffer = ({ silent = false } = {}) => {
         <p style={{ fontSize: '12px', color: '#999', marginBottom: '12px' }}>
           Select 2 or more shapes to combine.
         </p>
-        {shapes.length === 0 && <p style={{ fontSize: '13px', color: '#666' }}>No shapes yet — add a buffer or draw a polygon.</p>}
+        {shapes.length === 0 && <p style={{ fontSize: '13px', color: '#666' }}>No shapes yet! add a buffer or draw a polygon.</p>}
         {shapes.map(s => (
           <div key={s.id} style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
             <input
@@ -1034,16 +1292,16 @@ const clearBuffer = ({ silent = false } = {}) => {
       <Panel title="Drive Time" open={activePanel === 'isochrone'} onClose={() => setActivePanel(null)}>
         <StatusLine status={status} />
         <SliderField
-          label="Radius"
-          value={isochroneRadius}
-          min={1}
-          max={10}
-          step={1}
-          unit="km"
-          onChange={e => setIsochroneRadius(Number(e.target.value))}
+          label="Drive Time"
+          value={isochroneMinutes}
+          min={5}
+          max={60}
+          step={5}
+          unit=" min"
+          onChange={e => setIsochroneMinutes(Number(e.target.value))}
         />
         <p style={{ fontSize: '12px', color: '#999', marginBottom: '12px' }}>
-          Pin a location, then calculate approximate drive-time coverage. Green = fast, red = slow.
+          Pin a location to see how far you can drive in that time, in live traffic. Green = closest, red = furthest.
         </p>
         <PanelBtn onClick={() => runIsochrone()}>Calculate</PanelBtn>
         <PanelBtn onClick={clearIsochrone} variant="secondary">Clear</PanelBtn>
@@ -1054,7 +1312,7 @@ const clearBuffer = ({ silent = false } = {}) => {
         <StatusLine status={status} />
 
         <div style={{ display: 'flex', gap: '6px', marginBottom: '12px' }}>
-          {[['hospital', 'Hospital'], ['police_station', 'Police'], ['fire_department', 'Fire Department']].map(([val, label]) => (
+          {[['hospital', 'Hospital'], ['police_station', 'Police'], ['fire_department', 'Fire Dept.']].map(([val, label]) => (
             <button key={val} onClick={() => setNearbyCategory(val)} style={{
               flex: 1, padding: '8px', fontSize: '12px', cursor: 'pointer', borderRadius: '6px',
               border: nearbyCategory === val ? '2px solid #2d4a6e' : '1px solid #ddd',
@@ -1078,7 +1336,7 @@ const clearBuffer = ({ silent = false } = {}) => {
         <div style={{ height: '1px', background: '#eee', margin: '14px 0' }} />
 
         {nearbyResults.length === 0 && (
-          <p className="text-[13px] text-muted-foreground">No results yet — pin a location and search, or ask the assistant (e.g. "hospitals near me").</p>
+          <p className="text-[13px] text-muted-foreground">No results yet! pin a location and search, or ask the assistant (e.g. "hospitals near me").</p>
         )}
         {nearbyResults.map(r => (
           <div key={r.id}
@@ -1090,7 +1348,7 @@ const clearBuffer = ({ silent = false } = {}) => {
             <p className="text-sm font-semibold mb-0.5">{r.name}</p>
             {r.address && <p className="text-xs text-muted-foreground mb-1.5">{r.address}</p>}
             <p className="text-xs font-medium text-foreground/70 mb-2">
-              {(r.driving_distance_m / 1000).toFixed(2)} km — {Math.round(r.driving_duration_s / 60)} min drive
+              {(r.driving_distance_m / 1000).toFixed(2)} km({Math.round(r.driving_duration_s / 60)} min drive)
             </p>
             <button onClick={(e) => {
               e.stopPropagation()
@@ -1105,6 +1363,90 @@ const clearBuffer = ({ silent = false } = {}) => {
           </div>
         ))}
         {nearbyResults.length > 0 && <PanelBtn onClick={clearNearbyFeatures} variant="secondary">Clear Results</PanelBtn>}
+      </Panel>
+
+      {/* Best For Everyone Panel */}
+      <Panel title="Best For Everyone" open={activePanel === 'best-destination'} onClose={() => setActivePanel(null)}>
+        <StatusLine status={status} />
+
+        <div style={{ display: 'flex', gap: '6px', marginBottom: '12px' }}>
+          {[['hospital', 'Hospital'], ['police_station', 'Police'], ['fire_department', 'Fire Dept.']].map(([val, label]) => (
+            <button key={val} onClick={() => setBestDestCategory(val)} style={{
+              flex: 1, padding: '8px', fontSize: '12px', cursor: 'pointer', borderRadius: '6px',
+              border: bestDestCategory === val ? '2px solid #2d4a6e' : '1px solid #ddd',
+              background: bestDestCategory === val ? '#eef4fa' : 'white',
+              color: 'rgb(37 34 34)',
+            }}>{label}</button>
+          ))}
+        </div>
+
+        <InputField
+          label="Origin A"
+          placeholder="Address or coordinate"
+          value={originAInput}
+          onChange={e => setOriginAInput(e.target.value)}
+          overlay={originAInput.trim() === '' && !!navigator.geolocation ? (
+            <>
+              <MapPin size={13} strokeWidth={2} />
+              My location
+            </>
+          ) : null}
+        />
+        <InputField
+          label="Origin B"
+          placeholder="Address or coordinate"
+          value={originBInput}
+          onChange={e => setOriginBInput(e.target.value)}
+          overlay={originBInput.trim() === '' && !!navigator.geolocation ? (
+            <>
+              <MapPin size={13} strokeWidth={2} />
+              My location
+            </>
+          ) : null}
+        />
+
+        <div style={{ display: 'flex', gap: '8px', marginTop: '4px' }}>
+          <div style={{ flex: 1 }}>
+            <PanelBtn
+              tooltip="For emergencies occasions"
+              onClick={() => runBestDestination(undefined, undefined, undefined, undefined, 'priority')}
+            >Urgent</PanelBtn>
+          </div>
+          <div style={{ flex: 1 }}>
+            <PanelBtn
+              tooltip="Picks the fastest combined travel time for both people"
+              onClick={() => runBestDestination(undefined, undefined, undefined, undefined, 'efficient')}
+            >Efficient</PanelBtn>
+          </div>
+        </div>
+
+        <div style={{ height: '1px', background: '#eee', margin: '14px 0' }} />
+
+        {bestDestResults.length === 0 && (
+          <p className="text-[13px] text-muted-foreground">No results yet! enter both starting points (leave one blank for your own location) and search.</p>
+        )}
+        {bestDestResults.map((r, i) => (
+          <div key={r.id}
+            onMouseEnter={() => handleBestDestHover(r, true)}
+            onMouseLeave={() => handleBestDestHover(r, false)}
+            onClick={() => map.current.flyTo({ center: [r.lng, r.lat], zoom: 17 })}
+            className="p-2.5 mb-2 rounded-md ring-1 ring-ring/40 cursor-pointer transition-colors hover:bg-accent"
+          >
+            {i === 0 && (
+              <span className="inline-block px-1.5 py-0.5 mb-1 rounded text-[10px] font-semibold uppercase tracking-wide bg-primary text-primary-foreground">
+                Best match
+              </span>
+            )}
+            <p className="text-sm font-semibold mb-0.5">{r.name}</p>
+            {r.address && <p className="text-xs text-muted-foreground mb-1.5">{r.address}</p>}
+            <div className="text-xs font-medium text-foreground/70">
+              {r.durations_s.map((d, j) => (
+                <p key={j} className="mb-0.5">{bestDestOrigins[j]?.label || `Origin ${j + 1}`}: {Math.round(d / 60)} min drive</p>
+              ))}
+            </div>
+          </div>
+        ))}
+        {bestDestResults.length > 0 && <PanelBtn onClick={clearBestDestination} variant="secondary">Clear Results</PanelBtn>}
       </Panel>
 
 

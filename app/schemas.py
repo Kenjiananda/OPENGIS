@@ -1,6 +1,7 @@
 from pydantic import BaseModel
-from typing import Any
+from typing import Any, Literal
 from enum import Enum
+
 
 class FeatureCategory(str, Enum):
     hospital = "hospital"
@@ -31,4 +32,17 @@ class AssistantQuery(BaseModel):
 class AssistantAction(BaseModel):
     action: str
     params: dict
+
+
+class OriginPoint(BaseModel):
+    lat: float
+    lng: float
+    label: str | None = None
+
+
+class BestDestinationRequest(BaseModel):
+    origins: list[OriginPoint]
+    category: FeatureCategory
+    radius_m: float = 5000
+    mode: Literal["priority", "efficient"] = "priority"
 
