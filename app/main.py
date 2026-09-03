@@ -9,6 +9,7 @@ from app.routers import spatial
 from app.routers import viewshed
 from app.routers import routing
 from app.routers import assistant
+from app.routers import saved_shapes
 
 # Without this, uvicorn leaves the root logger unconfigured and anything the app
 # logs below WARNING is silently dropped.
@@ -21,6 +22,8 @@ app.include_router(spatial.router)
 app.include_router(viewshed.router)
 app.include_router(routing.router)
 app.include_router(assistant.router)
+app.include_router(saved_shapes.router)
+
 
 app.add_middleware(
     CORSMiddleware,

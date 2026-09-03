@@ -16,10 +16,8 @@ MAPBOX_ACCESS_TOKEN = os.getenv("MAPBOX_ACCESS_TOKEN")
 
 
 async def osrm_get(client, url, params, attempts=3):
-    """The public OSRM demo server is free and shared, with no uptime guarantee --
-    it intermittently drops connections for a few seconds at a time, which surfaced
-    to users as random "Routing service unavailable" failures. Retry briefly before
-    giving up, since a repeat request usually succeeds immediately."""
+    """The public OSRM server drops connections for a few seconds at a time, which
+    showed up as random 503s. A retry usually succeeds immediately."""
     for attempt in range(attempts):
         try:
             return await client.get(url, params=params)
@@ -45,10 +43,8 @@ async def get_mapbox_traffic_duration(client, start_lng, start_lat, end_lng, end
 
 
 async def get_mapbox_traffic_matrix(client, coords, n_source):
-    """coords is a flat list of (lng, lat) starting with the n_source origin
-    points, followed by destination points. Mapbox's driving-traffic profile
-    caps requests at 10 total coordinates, so callers must pre-filter down to
-    that before calling this."""
+    """coords is (lng, lat) pairs: n_source origins first, then destinations.
+    Mapbox caps this at 10 coordinates total, so callers must pre-filter."""
     if not MAPBOX_ACCESS_TOKEN:
         return None
     try:
@@ -160,16 +156,9 @@ async def isochrone(
     max_minutes: int = Query(15, ge=1, le=60),
     bands: int = Query(4, ge=1, le=4),
 ):
-    """Drive-time isochrone from Mapbox's Isochrone API, which walks the real road
-    network rather than sampling a grid, so the shape follows actual streets.
-
-    Mapbox returns nested contours (the 15-minute polygon contains the 10-minute one).
-    We subtract each contour from the next so the frontend receives disjoint bands and
-    can paint them without the slower ones covering the faster ones.
-
-    API limits, confirmed against the live service: at most 4 contours per request,
-    and max_minutes cannot exceed 60.
-    """
+    """Drive-time isochrone from Mapbox, which walks the real road network instead of
+    sampling a grid. Mapbox returns nested contours, so each is subtracted from the
+    next to give disjoint bands. Limits: 4 contours max, 60 minutes max."""
     if not MAPBOX_ACCESS_TOKEN:
         raise HTTPException(status_code=503, detail="Isochrone needs a Mapbox access token")
 
@@ -228,12 +217,8 @@ async def isochrone(
 
 def _sort_key(mode):
     if mode == "efficient":
-        # Rank on the total the UI actually displays -- per-origin minutes, rounded the
-        # same way the frontend rounds them -- rather than raw seconds. Two candidates
-        # that both read as "20 min total" on screen should count as tied and then be
-        # decided by whichever splits the trip more evenly (the lower max). Comparing
-        # raw seconds instead lets a sub-minute difference decide the winner outright,
-        # so the max tiebreak never runs and the more lopsided option can rank higher.
+        # Rank on the minutes the UI shows, not raw seconds. Two options both reading
+        # "20 min total" should tie, then be decided by the more even split (lower max).
         return lambda r: (
             sum(round(d / 60) for d in r["durations_s"]),
             max(r["durations_s"]),
@@ -308,9 +293,8 @@ async def best_destination(
         # duration first, only falling through to origins[1] etc. to break ties.
         results.sort(key= _sort_key(data.mode))
 
-        # Mapbox's driving-traffic matrix profile caps requests at 10 total
-        # coordinates (origins + destinations combined), so only the OSRM-best
-        # candidates get refined with real traffic data instead of the whole list.
+        # Mapbox's matrix caps at 10 coordinates, so only the OSRM-best candidates
+        # get traffic-refined.
         max_candidates = max(10 - n_origins, 0)
         top_results = results[:max_candidates]
 

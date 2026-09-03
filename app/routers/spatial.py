@@ -35,7 +35,9 @@ async def intersect(geometries: list[dict] = Body(embed=True)):
         result = geoms[0]
         for geom in geoms[1:]:
             result = result.intersection(geom)
-        if result.is_empty:
+        # Shapes that only touch along an edge intersect to a zero-area LineString or
+        # Point, not an empty geometry, so is_empty alone lets those slip through.
+        if result.is_empty or result.area == 0:
             raise HTTPException(status_code=404, detail="no intersection found between the geometries")
         return{
         "type": "intersection",
@@ -53,6 +55,10 @@ async def union(geometries: list[dict] = Body(embed=True)):
             raise HTTPException(status_code=400, detail="At least 2 geometries are required")
         geoms = [shape(g) for g in geometries]
         result = unary_union(geoms)
+        # Touching/overlapping shapes dissolve into one Polygon; a MultiPolygon here
+        # means at least one input never actually touched the rest.
+        if result.geom_type == "MultiPolygon":
+            raise HTTPException(status_code=404, detail="Shapes don't touch or overlap, nothing to union")
         return{
             "type": "union",
             "geometry": mapping(result)

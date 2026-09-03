@@ -29,13 +29,9 @@ async def forward_geocode(address: str):
             detail = "Input looks like coordinate. use /geocode/reverse instead."
         )
     try:
-        # The viewbox is a ranking *preference*, not a hard filter. bounded=True was
-        # tried and is actively harmful: searching "Hualien" then matched a Xinzhuang
-        # government office whose name happens to contain the character, silently
-        # sending the user to a random New Taipei address instead of telling them
-        # Hualien is out of range. Letting Nominatim find what the user actually meant
-        # and rejecting it afterwards gives an honest answer, and in-region queries
-        # resolve identically either way.
+        # Viewbox is a ranking preference, not a hard filter. bounded=True forced a
+        # local match: "Hualien" hit a Xinzhuang office and silently returned the wrong
+        # place. Let Nominatim find the real match, then reject it if out of area.
         location = geocode(
             address,
             viewbox=TAIPEI_VIEWBOX,

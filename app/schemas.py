@@ -46,3 +46,21 @@ class BestDestinationRequest(BaseModel):
     radius_m: float = 5000
     mode: Literal["priority", "efficient"] = "priority"
 
+class SavedShapeCreate(BaseModel):
+    name: str
+    geometry: dict
+    kind: Literal["buffer", "polygon", "intersect", "union"]
+    color: str
+
+class SavedShapeRename(BaseModel):
+    name: str
+
+class SavedShapeOut(BaseModel):
+    id: int
+    name: str
+    geometry: dict
+    kind: str
+    color: str
+
+    class Config:
+        from_attributes = True

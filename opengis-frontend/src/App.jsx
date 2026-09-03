@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import {createRoot} from 'react-dom/client'
-import { Search, CircleDashed, LandPlot, Route, Info, Layers, Timer, Pentagon, MapPin, AtSignIcon, Hospital, FireExtinguisher, MapPinned, Sun, Moon, Users } from 'lucide-react'
+import { Search, CircleDashed, LandPlot, Route, Info, Layers, Timer, Pentagon, MapPin, AtSignIcon, Hospital, FireExtinguisher, MapPinned, Sun, Moon, Users, Eye, EyeOff } from 'lucide-react'
 import maplibregl, { Popup } from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
 import axios from 'axios'
@@ -117,12 +117,13 @@ const panelBtnVariants = {
   destructive: 'bg-destructive text-destructive-foreground hover:opacity-90',
 }
 
-function PanelBtn({ onClick, variant = 'primary', tooltip, children }) {
+function PanelBtn({ onClick, variant = 'primary', tooltip, disabled = false, children }) {
   return (
     <button
       onClick={onClick}
       title={tooltip}
-      className={`w-full p-2.5 mb-2 rounded-md text-sm font-medium cursor-pointer border-none transition-opacity ${panelBtnVariants[variant]}`}
+      disabled={disabled}
+      className={`w-full p-2.5 mb-2 rounded-md text-sm font-medium cursor-pointer border-none transition-opacity ${panelBtnVariants[variant]} ${disabled ? 'opacity-50 cursor-not-allowed pointer-events-none' : ''}`}
     >
       {children}
     </button>
@@ -159,16 +160,14 @@ function useThrottle(callback, delay){
   }, [callback, delay])
 }
 
-// The assistant is told to leave `location` empty for "near me" style requests,
-// but it often echoes the user's own wording instead ("here", "my location").
-// Treat those as blank so they fall through to the live-GPS branch.
-// Axios's own message for a failed request is just "Request failed with status
-// code 404", which hides the reason. The backend always sends a human-readable
-// explanation in `detail` (e.g. "not found in Taipei or New Taipei"), so prefer it.
+// Axios only says "Request failed with status code 404". Prefer the backend's
+// `detail`, which explains why.
 function apiError(err) {
   return err.response?.data?.detail || err.message
 }
 
+// The assistant often echoes "here" or "my location" instead of leaving location
+// blank, so treat those as blank and fall through to live GPS.
 function isSelfReferentialLocation(text) {
   const normalized = (text || '').trim().toLowerCase()
   return normalized === '' || ['here', 'me', 'near me', 'my location', 'current location', 'my current location'].includes(normalized)
@@ -247,11 +246,8 @@ function createIconMarkerElement(IconComponent, color, size = 30) {
     `
   }
 
-  // Wires hover-to-preview behavior on a marker's DOM element: scales the icon
-  // (matching the existing list-hover effect) and shows a popup at its coordinates,
-  // like Google Maps' hover card. No panTo here (unlike list-item hover) — the
-  // marker is already on screen, and panning under the cursor would just cause
-  // mouseleave/mouseenter to fight each other.
+  // Hover preview on a marker: scale the icon and show a popup. No panTo here, since
+  // the marker is already on screen and panning would fight mouseenter/mouseleave.
   function attachMarkerHoverPopup(mapInstance, element, innerEl, lngLat, popup) {
     element.addEventListener('mouseenter', () => {
       setMarkerHighlight(innerEl, true)
@@ -345,6 +341,14 @@ function App() {
         }
       })
       handleUseMyLocation() //auto request location
+
+      // Bring back whatever was saved last session so the map doesn't start empty.
+      axios.get(`${API}/shapes/`).then(res => {
+        res.data.forEach(s => {
+          const id = addShape(s.geometry, s.color, s.name, 'shapes', s.kind)
+          setShapes(prev => prev.map(sh => sh.id === id ? { ...sh, savedId: s.id } : sh))
+        })
+      }).catch(err => setStatus('Could not load saved shapes: ' + apiError(err)))
     })
 
     map.current.on('click', (e) =>{
@@ -529,10 +533,8 @@ function App() {
     return messages[err.code] || err.message || 'Failed to get your location'
   }
 
-  // Shared by every assistant action that takes a `location` param: resolves a
-  // named place via pinLocation, or falls back to live GPS (dropping the same
-  // red marker) when the assistant left it blank or echoed a self-referential
-  // phrase like "here" — see isSelfReferentialLocation.
+  // Shared by every assistant action taking a `location`: resolve the named place,
+  // or fall back to live GPS when it's blank or self-referential.
   const resolveAssistantLocation = async (location) => {
     if (location && !isSelfReferentialLocation(location)) {
       return await pinLocation(location)
@@ -588,11 +590,19 @@ function App() {
     const layerId = `shape-${id}`
     map.current.addSource(layerId, { type: 'geojson', data: { type: 'Feature', geometry } })
     map.current.addLayer({ id: layerId, type: 'fill', source: layerId, paint: { 'fill-color': color, 'fill-opacity': 0.35 } })
-    setShapes(prev => [...prev, { id, name: name || getNextDefaultName(prev, typeLabel), geometry, origin }])
+    setShapes(prev => [...prev, {
+      id, name: name || getNextDefaultName(prev, typeLabel), geometry, origin, visible: true,
+      color, kind: typeLabel.toLowerCase(), savedId: null,
+    }])
     return id
   }
 
-  const removeShape = (id) => {
+  const toggleShapeVisible = (id) => {
+    setShapes(prev => prev.map(s => s.id === id ? { ...s, visible: !s.visible } : s))
+  }
+
+  const removeShape = async (id) => {
+    const shape = shapes.find(s => s.id === id)
     const layerId = `shape-${id}`
     const outlineId = `shape-outline-${id}`
     if (map.current.getLayer(outlineId)) map.current.removeLayer(outlineId)
@@ -600,6 +610,13 @@ function App() {
     if (map.current.getSource(layerId)) map.current.removeSource(layerId)
     setShapes(prev => prev.filter(s => s.id !== id))
     setSelectedShapeIds(prev => prev.filter(sid => sid !== id))
+    if (shape?.savedId) {
+      try {
+        await axios.delete(`${API}/shapes/${shape.savedId}`)
+      } catch (err) {
+        setStatus('Could not delete saved shape: ' + apiError(err))
+      }
+    }
   }
   
   useEffect(() => {
@@ -607,8 +624,9 @@ function App() {
     shapes.forEach(s => {
       const layerId = `shape-${s.id}`
       const outlineId = `shape-outline-${s.id}`
-      const visible = activePanel === 'shapes' || activePanel === s.origin
-      const visibility = visible ? 'visible' : 'none'
+      // The eye toggle can hide a shape, but never show one on a panel it doesn't belong to.
+      const inScope = activePanel === 'shapes' || activePanel === s.origin
+      const visibility = inScope && s.visible !== false ? 'visible' : 'none'
       if (map.current.getLayer(layerId)) {
         map.current.setLayoutProperty(layerId, 'visibility', visibility)
       }
@@ -618,20 +636,75 @@ function App() {
     })
   }, [activePanel, shapes])
 
+  // Losing an unsaved buffer/intersect to an accidental refresh is easy to do and
+  // easy not to notice until it's too late, so warn before the tab actually closes.
+  useEffect(() => {
+    const hasUnsaved = shapes.some(s => !s.savedId)
+    if (!hasUnsaved) return
+    const handler = (e) => { e.preventDefault(); e.returnValue = '' }
+    window.addEventListener('beforeunload', handler)
+    return () => window.removeEventListener('beforeunload', handler)
+  }, [shapes])
+
   const renameShape = (id, newName) => {
     setShapes(prev => prev.map(s => s.id === id ? { ...s, name: newName } : s))
   }
 
   const handleShapeNameBlur = (id) => {
-    setShapes(prev => {
-      const shape = prev.find(s => s.id === id)
-      if (shape && !shape.name.trim()) {
-        const others = prev.filter(s => s.id !== id)
-        return prev.map(s => s.id === id ? { ...s, name: getNextDefaultName(others) } : s)
-      }
-      return prev
-    })
+    const shape = shapes.find(s => s.id === id)
+    if (!shape) return
+    const finalName = shape.name.trim() || getNextDefaultName(shapes.filter(s => s.id !== id))
+    if (finalName !== shape.name) {
+      setShapes(prev => prev.map(s => s.id === id ? { ...s, name: finalName } : s))
+    }
+    // Already-saved shapes need the rename pushed too, or a refresh reverts to
+    // whatever name was on the row when it was first POSTed.
+    if (shape.savedId) {
+      axios.patch(`${API}/shapes/${shape.savedId}`, { name: finalName })
+        .catch(err => setStatus('Could not rename saved shape: ' + apiError(err)))
+    }
   }
+
+  const renderShapeRow = (s) => (
+    <div key={s.id} style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+      <button
+        onClick={() => toggleShapeVisible(s.id)}
+        title={s.visible === false ? 'Show on map' : 'Hide from map'}
+        style={{
+          border: 'none', background: 'none', cursor: 'pointer', padding: 0,
+          display: 'flex', alignItems: 'center',
+          color: s.visible === false ? '#bbb' : '#555',
+        }}
+      >
+        {s.visible === false ? <EyeOff size={15} strokeWidth={1.75} /> : <Eye size={15} strokeWidth={1.75} />}
+      </button>
+      <input
+        type="checkbox"
+        checked={selectedShapeIds.includes(s.id)}
+        onChange={() => toggleShapeSelect(s.id)}
+      />
+      <input
+        type="text"
+        value={s.name}
+        onChange={e => renameShape(s.id, e.target.value)}
+        onFocus={() => setFocusedShapeId(s.id)}
+        onBlur={() => { setFocusedShapeId(null); handleShapeNameBlur(s.id) }}
+        onKeyDown={e => e.key === 'Enter' && e.target.blur()}
+        style={{
+          fontSize: '13px', flex: 1, minWidth: 0, padding: '2px 4px',
+          border: focusedShapeId === s.id ? '1px solid #ddd' : '1px solid transparent',
+          borderRadius: '4px',
+          background: focusedShapeId === s.id ? 'white' : 'transparent',
+          outline: 'none', fontFamily: 'Segoe UI, Arial, sans-serif',
+        }}
+      />
+      <span
+        title={s.savedId ? undefined : 'Not yet saved'}
+        style={{ width: '6px', height: '6px', borderRadius: '50%', flexShrink: 0, background: s.savedId ? 'transparent' : '#f59e0b' }}
+      />
+      <button onClick={() => removeShape(s.id)} style={{ border: 'none', background: 'none', color: '#999', cursor: 'pointer' }}>✕</button>
+    </div>
+  )
 
   const highlightShape = (id, selected) => {
     const layerId = `shape-${id}`
@@ -640,7 +713,7 @@ function App() {
     map.current.setPaintProperty(layerId, 'fill-opacity', selected ? 0.6 : 0.35)
     if (selected) {
       if (!map.current.getLayer(outlineId)) {
-        map.current.addLayer({ id: outlineId, type: 'line', source: layerId, paint: { 'line-color': '#f1c40f', 'line-width': 3 } })
+        map.current.addLayer({ id: outlineId, type: 'line', source: layerId, paint: { 'line-color': '#484a49', 'line-width': 3 } })
       }
     } else if (map.current.getLayer(outlineId)) {
       map.current.removeLayer(outlineId)
@@ -695,7 +768,7 @@ const commitBuffer = () => {
     setStatus('No active buffer to add')
     return
   }
-  const id = addShape(currentBufferGeometry.current, '#3498db',  null, undefined, 'Buffer')
+  const id = addShape(currentBufferGeometry.current, '#4c9ed5',  null, undefined, 'Buffer')
   setStatus('Buffer added to shapes')
   return id
 }
@@ -861,9 +934,35 @@ const clearBuffer = ({ silent = false } = {}) => {
     })
   }
 
-  // overrideIds/overrideGeometries let a caller that just created shapes in this
-  // same tick (e.g. createMultipleBuffers) pass them directly, since `shapes`
-  // state won't reflect a setShapes() call from earlier in the same function yet.
+  const clearShapeSelection = () => {
+    selectedShapeIds.forEach(id => highlightShape(id, false))
+    setSelectedShapeIds([])
+  }
+
+  const rawShapes = shapes.filter(s => s.kind === 'buffer' || s.kind === 'polygon')
+  const derivedShapes = shapes.filter(s => s.kind === 'intersect' || s.kind === 'union')
+  const unsavedShapeCount = shapes.filter(s => !s.savedId).length
+
+  // Sequential, not Promise.all — a slow or failed save shouldn't block the rest,
+  // and the status line can only show one message at a time anyway.
+  const saveAllShapes = async () => {
+    const unsaved = shapes.filter(s => !s.savedId)
+    if (unsaved.length === 0) return
+    let failed = 0
+    for (const s of unsaved) {
+      try {
+        const res = await axios.post(`${API}/shapes/`, { name: s.name, geometry: s.geometry, kind: s.kind, color: s.color })
+        setShapes(prev => prev.map(sh => sh.id === s.id ? { ...sh, savedId: res.data.id } : sh))
+      } catch (err) {
+        failed++
+        setStatus(`Could not save "${s.name}": ` + apiError(err))
+      }
+    }
+    if (failed === 0) setStatus(`Saved ${unsaved.length} shape${unsaved.length === 1 ? '' : 's'}`)
+  }
+
+  // Overrides let a caller that just created shapes this tick pass them directly,
+  // since `shapes` state isn't updated yet.
   const runOverlay = async (operation, overrideIds, overrideGeometries) => {
     const ids = overrideIds ?? selectedShapeIds
     if (ids.length < 2) return
@@ -871,9 +970,11 @@ const clearBuffer = ({ silent = false } = {}) => {
       setStatus(`Running ${operation}...`)
       const geometries = overrideGeometries ?? shapes.filter(s => ids.includes(s.id)).map(s => s.geometry)
       const res = await axios.post(`${API}/spatial/${operation}`, { geometries })
-      ids.forEach(id => removeShape(id))
-      addShape(res.data.geometry, '#e74c3c', null, undefined, operation.charAt(0).toUpperCase() + operation.slice(1))
-      setSelectedShapeIds([])
+      // Keep the sources; select only the result so it's clear what's new.
+      ids.forEach(id => highlightShape(id, false))
+      const newId = addShape(res.data.geometry, '#e74c3c', null, undefined, operation.charAt(0).toUpperCase() + operation.slice(1))
+      setSelectedShapeIds([newId])
+      highlightShape(newId, true)
       setStatus(`${operation} complete`)
     } catch (err) {
       setStatus(`${operation} failed: ` + apiError(err))
@@ -1031,9 +1132,8 @@ const clearBuffer = ({ silent = false } = {}) => {
     if (active) map.current.panTo([r.lng, r.lat])
   }
 
-  // Unlike resolveAssistantLocation, this can't touch the singular
-  // currentMarker/currentLocation refs — two independent origins need two
-  // independent pins that stick around at once.
+  // Can't use the singular currentMarker/currentLocation refs: two origins need
+  // two pins at once.
   const resolveOriginLocation = async (text) => {
     const trimmed = (text || '').trim()
     if (isSelfReferentialLocation(trimmed)) {
@@ -1052,10 +1152,8 @@ const clearBuffer = ({ silent = false } = {}) => {
     return { lat: res.data.latitude, lng: res.data.longitude }
   }
 
-  // Overrides let the assistant dispatch pass values straight through instead of
-  // relying on originAInput/bestDestCategory state, which wouldn't be updated yet
-  // in the same tick right after a setOriginAInput() call — same hazard runOverlay
-  // and createMultipleBuffers hit with `shapes` state earlier.
+  // Overrides let the assistant dispatch pass values straight through, since the
+  // matching state isn't updated yet in the same tick.
   const runBestDestination = async (overrideOriginA, overrideOriginB, overrideCategory, overrideRadius, overrideMode) => {
     try {
       setStatus('Finding best match...')
@@ -1251,42 +1349,53 @@ const clearBuffer = ({ silent = false } = {}) => {
 
       {/* Shapes Panel */}
       <Panel title="Shapes" open={activePanel === 'shapes'} onClose={() => setActivePanel(null)}>
-        <StatusLine status={status} />
-        <p style={{ fontSize: '12px', color: '#999', marginBottom: '12px' }}>
-          Select 2 or more shapes to combine.
-        </p>
-        {shapes.length === 0 && <p style={{ fontSize: '13px', color: '#666' }}>No shapes yet! add a buffer or draw a polygon.</p>}
-        {shapes.map(s => (
-          <div key={s.id} style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
-            <input
-              type="checkbox"
-              checked={selectedShapeIds.includes(s.id)}
-              onChange={() => toggleShapeSelect(s.id)}
-            />
-            <input
-              type="text"
-              value={s.name}
-              onChange={e => renameShape(s.id, e.target.value)}
-              onFocus={() => setFocusedShapeId(s.id)}
-              onBlur={() => { setFocusedShapeId(null); handleShapeNameBlur(s.id) }}
-              onKeyDown={e => e.key === 'Enter' && e.target.blur()}
-              style={{
-                fontSize: '13px', flex: 1, minWidth: 0, padding: '2px 4px',
-                border: focusedShapeId === s.id ? '1px solid #ddd' : '1px solid transparent',
-                borderRadius: '4px',
-                background: focusedShapeId === s.id ? 'white' : 'transparent',
-                outline: 'none', fontFamily: 'Segoe UI, Arial, sans-serif',
-              }}
-            />
-            <button onClick={() => removeShape(s.id)} style={{ marginLeft: 'auto', border: 'none', background: 'none', color: '#999', cursor: 'pointer' }}>✕</button>
+        <div className="flex flex-col h-full">
+          <div className="flex-1 overflow-y-auto">
+            <StatusLine status={status} />
+            <p style={{ fontSize: '12px', color: '#999', marginBottom: '12px' }}>
+              Select 2 or more shapes to combine.
+            </p>
+            {shapes.length === 0 && <p style={{ fontSize: '13px', color: '#666' }}>No shapes yet! add a buffer or draw a polygon.</p>}
+
+            {rawShapes.length > 0 && (
+              <>
+                <p className="text-xs text-muted-foreground font-medium uppercase tracking-wide mb-1.5">Raw</p>
+                {rawShapes.map(renderShapeRow)}
+              </>
+            )}
+
+            {derivedShapes.length > 0 && (
+              <>
+                <p className="text-xs text-muted-foreground font-medium uppercase tracking-wide mb-1.5 mt-3">Derived</p>
+                {derivedShapes.map(renderShapeRow)}
+              </>
+            )}
           </div>
-        ))}
-        {selectedShapeIds.length >= 2 && (
-          <>
-            <PanelBtn onClick={() => runOverlay('intersect')}>Intersect</PanelBtn>
-            <PanelBtn onClick={() => runOverlay('union')}>Union</PanelBtn>
-          </>
-        )}
+
+          {selectedShapeIds.length >= 2 && (
+            <div className="pt-3 mt-2 border-t border-ring/30">
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-xs text-muted-foreground">{selectedShapeIds.length} selected</span>
+                <button
+                  onClick={clearShapeSelection}
+                  className="text-xs text-muted-foreground hover:text-foreground bg-transparent border-none cursor-pointer p-0"
+                >
+                  Clear
+                </button>
+              </div>
+              <div className="flex gap-2">
+                <div className="flex-1"><PanelBtn onClick={() => runOverlay('intersect')}>Intersect</PanelBtn></div>
+                <div className="flex-1"><PanelBtn onClick={() => runOverlay('union')}>Union</PanelBtn></div>
+              </div>
+            </div>
+          )}
+
+          <div className="pt-3 mt-2 border-t border-ring/30">
+            <PanelBtn variant="secondary" onClick={saveAllShapes} disabled={unsavedShapeCount === 0}>
+              {unsavedShapeCount === 0 ? 'All shapes saved' : `Save ${unsavedShapeCount} shape${unsavedShapeCount === 1 ? '' : 's'}`}
+            </PanelBtn>
+          </div>
+        </div>
       </Panel>
 
       <Panel title="Drive Time" open={activePanel === 'isochrone'} onClose={() => setActivePanel(null)}>
@@ -1393,7 +1502,7 @@ const clearBuffer = ({ silent = false } = {}) => {
           ) : null}
         />
         <InputField
-          label="Origin B"
+          label="Origin B (urgent party)"
           placeholder="Address or coordinate"
           value={originBInput}
           onChange={e => setOriginBInput(e.target.value)}

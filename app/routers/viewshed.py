@@ -70,10 +70,8 @@ async def viewshed(latitude: float, longitude:float, radius_meters: float =1000,
                     detail=f"Coordinates are outside the DEM coverage area. Row: {observer_row}, Col: {observer_col}, DEM size: {rows}x{cols}"
                 )
 
-            # transform[0] is the pixel width in DEGREES of longitude, and a degree of
-            # longitude is 111320m * cos(latitude) -- it shrinks away from the equator.
-            # Omitting cos() overestimated the pixel size, so the viewshed quietly
-            # covered ~10% less ground than the radius asked for at Taipei's latitude.
+            # A degree of longitude is 111320m * cos(latitude). Without cos() the pixel
+            # size is overestimated and the viewshed covers ~10% less ground than asked.
             pixel_size_meters = abs(transform[0]) * 111320 * cos(radians(latitude))
             radius_pixels = int(radius_meters / pixel_size_meters)
             radius_pixels = min(radius_pixels, 100)
@@ -85,11 +83,9 @@ async def viewshed(latitude: float, longitude:float, radius_meters: float =1000,
             if not visible.any():
                 raise HTTPException(status_code=404, detail="No Visible area found")
 
-            # Trace the outline of the visible cells themselves. The previous version
-            # took a convex hull of those cells, which filled in every notch and valley
-            # the calculation had just worked out was hidden -- measured at 36% more
-            # area than is actually visible. A real viewshed is ragged and often comes
-            # in several disconnected pieces, so keep it as a MultiPolygon.
+            # Trace the visible cells directly. A convex hull filled in the hidden
+            # valleys, over-reporting by ~36%. Real viewsheds are ragged and often
+            # come in several pieces, so keep a MultiPolygon.
             shapes = [
                 shape(geom)
                 for geom, value in features.shapes(

@@ -31,6 +31,11 @@ async def create_feature(data: FeatureCreate, db: AsyncSession = Depends(get_db)
     row = result.one()
     return {"id": row.id, "name": row.name, "category": row.category, "address": row.address, "geometry": json.loads(row.geometry)}
 
+
+
+
+
+
 @router.get("/", response_model=list[FeatureOut])
 async def list_features(db: AsyncSession = Depends(get_db)):
     result = await db.execute(
